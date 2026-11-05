@@ -6,11 +6,19 @@ const JWT_SECRET = process.env.JWT_SECRET || 'jg-innovative-hub-secure-token-sec
 const TOKEN_EXPIRY = '7d';
 
 function hashPassword(password) {
+  if (!password || typeof password !== 'string') {
+    throw new Error('Password must be a non-empty string');
+  }
   return bcrypt.hashSync(password, 10);
 }
 
 function verifyPassword(plain, hashed) {
-  return bcrypt.compareSync(plain, hashed);
+  if (!plain || !hashed || typeof plain !== 'string' || typeof hashed !== 'string') return false;
+  try {
+    return bcrypt.compareSync(plain, hashed);
+  } catch {
+    return false;
+  }
 }
 
 function generateToken(user) {

@@ -27,8 +27,84 @@ const { awardXP, checkBadge, calculateLevel, getLevelTitle } = require('./gamifi
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
-app.use(express.json());
+// ---------------------------------------------------------------------
+// SECURITY HARDENING & ENTERPRISE CORS CONFIGURATION
+// ---------------------------------------------------------------------
+app.disable('x-powered-by');
+
+// Defense-in-depth OWASP Security Headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
+
+// Dynamic & Configurable Allowed Origins for Production / Staging
+const rawAllowedOrigins = process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '';
+const configuredOrigins = rawAllowedOrigins
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, server-to-server, SSR, same-origin)
+    if (!origin) return callback(null, true);
+
+    // Explicit wildcard allowance if specified in environment
+    if (configuredOrigins.includes('*')) return callback(null, true);
+
+    // Explicit match with configured origins
+    if (configuredOrigins.includes(origin)) return callback(null, true);
+
+    // Development & local testing origins
+    const isLocalhost = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+    if (isLocalhost) return callback(null, true);
+
+    console.warn(`[CORS Policy Block] Origin not permitted: ${origin}`);
+    callback(new Error(`Origin ${origin} is not allowed by CORS policy.`));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Cache-Control',
+    'Pragma'
+  ],
+  exposedHeaders: ['Content-Range', 'X-Content-Range', 'Retry-After'],
+  maxAge: 86400
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
+// Explicit body-parser limits to mitigate Denial-of-Service / memory exhaustion attacks
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+
+// ---------------------------------------------------------------------
+// CLOUD DEPLOYMENT READINESS PROBES (AWS / Render / Railway / K8s)
+// ---------------------------------------------------------------------
+app.get('/api/v1/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptimeSeconds: Math.floor(process.uptime()),
+    database: mongoStatus.connected ? 'connected' : 'local-ready',
+    environment: process.env.NODE_ENV || 'production'
+  });
+});
+app.get('/health', (req, res) => res.redirect('/api/v1/health'));
 
 // ---------------------------------------------------------------------
 // MONGODB CONNECTION
@@ -38,6 +114,11 @@ let mongoStatus = {
   dbName: null,
   message: 'Connecting to MongoDB...'
 };
+
+function sanitizeMongoMessage(msg) {
+  if (!msg || typeof msg !== 'string') return '';
+  return msg.replace(/(mongodb(?:\+srv)?:\/\/[^:]+:)[^@]+(@)/ig, '$1****$2');
+}
 
 async function connectMongo(uri) {
   if (!uri || !uri.trim()) {
@@ -58,11 +139,12 @@ async function connectMongo(uri) {
     await db.syncAllWithMongo();
     return true;
   } catch (err) {
-    console.error(`[MongoDB] Connection notice: ${err.message}`);
+    const safeError = sanitizeMongoMessage(err.message);
+    console.error(`[MongoDB] Connection notice: ${safeError}`);
     mongoStatus = {
       connected: false,
       dbName: null,
-      message: err.message
+      message: safeError
     };
     return false;
   }
@@ -144,20 +226,69 @@ function sanitizeUser(user) {
 }
 
 // ---------------------------------------------------------------------
-// 1. AUTHENTICATION & DEMO SWITCHER
+// 1. AUTHENTICATION & SECURITY RATE-LIMITING
 // ---------------------------------------------------------------------
+const loginAttempts = new Map();
+const LOGIN_MAX_FAILURES = 10;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15-minute sliding lockout window
+
+function checkLoginRateLimit(ip) {
+  const now = Date.now();
+  const record = loginAttempts.get(ip);
+  if (!record) return { allowed: true };
+  if (now - record.firstAttempt > LOGIN_WINDOW_MS) {
+    loginAttempts.delete(ip);
+    return { allowed: true };
+  }
+  if (record.failures >= LOGIN_MAX_FAILURES) {
+    const retryAfterSec = Math.ceil((record.firstAttempt + LOGIN_WINDOW_MS - now) / 1000);
+    return { allowed: false, retryAfter: retryAfterSec };
+  }
+  return { allowed: true };
+}
+
+function recordLoginFailure(ip) {
+  const now = Date.now();
+  const record = loginAttempts.get(ip) || { failures: 0, firstAttempt: now };
+  if (now - record.firstAttempt > LOGIN_WINDOW_MS) {
+    record.failures = 1;
+    record.firstAttempt = now;
+  } else {
+    record.failures += 1;
+  }
+  loginAttempts.set(ip, record);
+}
+
+function recordLoginSuccess(ip) {
+  loginAttempts.delete(ip);
+}
 
 app.post('/api/v1/auth/login', async (req, res) => {
+  const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+  const limitCheck = checkLoginRateLimit(clientIp);
+  if (!limitCheck.allowed) {
+    res.setHeader('Retry-After', limitCheck.retryAfter);
+    return res.status(429).json({
+      message: `Too many failed login attempts from this network. Please retry in ${Math.ceil(limitCheck.retryAfter / 60)} minutes.`
+    });
+  }
+
   const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email and password are required' });
+  if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ message: 'Valid email and password strings are required' });
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  if (cleanEmail.length > 254 || password.length > 256) {
+    return res.status(400).json({ message: 'Invalid credentials payload' });
   }
 
   // Ensure fresh user data directly from MongoDB Atlas
   await db.users.syncFromMongo();
 
-  const user = db.users.findOne({ email });
+  const user = db.users.find().find(u => u.email && u.email.toLowerCase() === cleanEmail);
   if (!user || !verifyPassword(password, user.passwordHash)) {
+    recordLoginFailure(clientIp);
     return res.status(401).json({ message: 'Invalid email or password' });
   }
 
@@ -165,6 +296,7 @@ app.post('/api/v1/auth/login', async (req, res) => {
     return res.status(403).json({ message: 'Account is deactivated. Contact Administrator.' });
   }
 
+  recordLoginSuccess(clientIp);
   db.users.updateById(user.id, { lastLogin: new Date().toISOString() });
   const token = generateToken(user);
   return res.json({
@@ -1878,24 +2010,29 @@ app.patch('/api/v1/config', authenticate, requireAdmin, (req, res) => {
 });
 
 // ---------------------------------------------------------------------
-// MONGODB ATLAS ENDPOINTS
+// MONGODB ATLAS ENDPOINTS (ADMIN PROTECTED)
 // ---------------------------------------------------------------------
-app.get('/api/v1/system/mongodb-status', (req, res) => {
+app.get('/api/v1/system/mongodb-status', authenticate, requireAdmin, (req, res) => {
   return res.json({
     connected: mongoStatus.connected,
     dbName: mongoStatus.dbName,
-    message: mongoStatus.message,
+    message: sanitizeMongoMessage(mongoStatus.message),
     hasConfiguredUri: Boolean(process.env.MONGODB_URI && process.env.MONGODB_URI.trim())
   });
 });
 
-app.post('/api/v1/system/mongodb-uri', async (req, res) => {
+app.post('/api/v1/system/mongodb-uri', authenticate, requireAdmin, async (req, res) => {
   const { uri } = req.body;
-  if (!uri || !uri.trim()) {
+  if (!uri || typeof uri !== 'string' || !uri.trim()) {
     return res.status(400).json({ message: 'MongoDB connection URI is required' });
   }
 
-  const success = await connectMongo(uri);
+  const cleanUri = uri.trim();
+  if (!cleanUri.startsWith('mongodb://') && !cleanUri.startsWith('mongodb+srv://')) {
+    return res.status(400).json({ message: 'Invalid MongoDB connection URI format. Must start with mongodb:// or mongodb+srv://' });
+  }
+
+  const success = await connectMongo(cleanUri);
   if (success) {
     try {
       const envPath = path.join(__dirname, '.env');
@@ -1903,28 +2040,30 @@ app.post('/api/v1/system/mongodb-uri', async (req, res) => {
       if (fs.existsSync(envPath)) {
         envContent = fs.readFileSync(envPath, 'utf8');
         if (envContent.includes('MONGODB_URI=')) {
-          envContent = envContent.replace(/MONGODB_URI=.*(\r?\n|$)/g, `MONGODB_URI=${uri.trim()}$1`);
+          envContent = envContent.replace(/MONGODB_URI=.*(\r?\n|$)/g, `MONGODB_URI=${cleanUri}$1`);
         } else {
-          envContent += `\nMONGODB_URI=${uri.trim()}\n`;
+          envContent += `\nMONGODB_URI=${cleanUri}\n`;
         }
       } else {
-        envContent = `PORT=5000\nJWT_SECRET=jg_innovative_hub_secret_key_2026_gamified\nMONGODB_URI=${uri.trim()}\n`;
+        envContent = `PORT=5000\nJWT_SECRET=jg_innovative_hub_secret_key_2026_gamified\nMONGODB_URI=${cleanUri}\n`;
       }
       fs.writeFileSync(envPath, envContent, 'utf8');
-      process.env.MONGODB_URI = uri.trim();
+      process.env.MONGODB_URI = cleanUri;
     } catch (saveErr) {
       console.warn('Could not write .env file:', saveErr.message);
     }
 
+    recordAudit(req.user.id, 'SYSTEM_CONFIG_UPDATED', 'CONFIG', 1, null, 'MongoDB Atlas URI updated', 'Administrator changed cluster URI');
+
     return res.json({
       connected: true,
       dbName: mongoStatus.dbName,
-      message: mongoStatus.message
+      message: sanitizeMongoMessage(mongoStatus.message)
     });
   } else {
     return res.status(400).json({
       connected: false,
-      message: mongoStatus.message
+      message: sanitizeMongoMessage(mongoStatus.message)
     });
   }
 });
@@ -1948,6 +2087,26 @@ if (fs.existsSync(frontendDist)) {
     res.sendFile(path.join(frontendDist, 'index.html'));
   });
 }
+
+// 3. Fallback handler for undefined API routes (Returns JSON instead of HTML 404)
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ message: `API route not found: ${req.method} ${req.originalUrl}` });
+});
+
+// 4. Centralized Enterprise Error Handling Middleware
+app.use((err, req, res, next) => {
+  if (err && err.message && err.message.includes('CORS')) {
+    return res.status(403).json({ message: err.message });
+  }
+
+  console.error('[Application Error]', err.message || err);
+  const status = err.status || err.statusCode || 500;
+  const message = process.env.NODE_ENV === 'production' && status === 500
+    ? 'An unexpected internal error occurred. Please try again later.'
+    : (err.message || 'Internal Server Error');
+
+  res.status(status).json({ message });
+});
 
 async function startServer() {
   if (mongoInitPromise) {

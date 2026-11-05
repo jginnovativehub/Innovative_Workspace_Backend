@@ -12,7 +12,7 @@ seedDatabase(true);
 
 // 1. AT-01: Role Separation & Privacy
 const alex = db.users.findOne({ email: 'alex.chen@jginnovative.com' });
-const priya = db.users.findOne({ email: 'priya.patel@jginnovative.com' });
+const priya = db.users.findOne({ email: 'kishor@inovative-hub.com' }) || db.users.findOne({ email: 'priya.patel@jginnovative.com' });
 const repPriya = db.weeklyReports.findOne({ userId: priya.id });
 
 assert.strictEqual(canAccessWeeklyReport(alex, repPriya), false, 'AT-01 FAIL: Alex Chen must not be able to view Priya Patel private report');
