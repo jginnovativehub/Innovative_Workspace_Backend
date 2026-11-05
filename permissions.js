@@ -46,10 +46,13 @@ function canAccessProject(user, projectId) {
 }
 
 function canAccessWeeklyReport(user, report) {
+  if (!user || !report) return false;
   // AT-01 Rule: Employee cannot view another employee's private weekly report
-  if (report.userId === user.id) return true;
+  const uId = String(user.id);
+  const repUserId = String(report.userId);
+  if (repUserId === uId) return true;
   if (['ADMIN', 'CEO', 'COO'].includes(user.role)) return true;
-  if (report.reviewedBy === user.id) return true;
+  if (report.reviewedBy && String(report.reviewedBy) === uId) return true;
   return false;
 }
 
