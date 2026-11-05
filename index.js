@@ -2,11 +2,14 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const express = require('express');
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '1.1.1.1']);
 const cors = require('cors');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
+
 const {
   JWT_SECRET,
   hashPassword,
@@ -54,21 +57,24 @@ const configuredOrigins = rawAllowedOrigins
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, server-to-server, SSR, same-origin)
+    // 1. Allow requests with no origin (mobile apps, curl, server-to-server, SSR, same-origin)
     if (!origin) return callback(null, true);
 
-    // Explicit wildcard allowance if specified in environment
-    if (configuredOrigins.includes('*')) return callback(null, true);
+    // 2. If no ALLOWED_ORIGINS is configured on backend, default to allowing all origins (reflect origin)
+    // This ensures new deployments on Vercel/Netlify/Render immediately work without CORS "Failed to fetch" errors!
+    if (configuredOrigins.length === 0 || configuredOrigins.includes('*')) {
+      return callback(null, true);
+    }
 
-    // Explicit match with configured origins
+    // 3. Explicit match with configured origins
     if (configuredOrigins.includes(origin)) return callback(null, true);
 
-    // Development & local testing origins
-    const isLocalhost = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+    // 4. Development & local testing origins
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
     if (isLocalhost) return callback(null, true);
 
-    console.warn(`[CORS Policy Block] Origin not permitted: ${origin}`);
-    callback(new Error(`Origin ${origin} is not allowed by CORS policy.`));
+    console.warn(`[CORS Policy Block] Origin not permitted: ${origin}. Set ALLOWED_ORIGINS on backend if this domain is trusted.`);
+    callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
@@ -137,6 +143,11 @@ async function connectMongo(uri) {
     };
     console.log(`[MongoDB] Connected successfully to: ${dbName}`);
     await db.syncAllWithMongo();
+    if (db.users.count() === 0) {
+      console.log('[MongoDB] Empty database detected. Auto-seeding initial administrative accounts & SRS baseline...');
+      const { seedDatabase } = require('./seed');
+      seedDatabase(false);
+    }
     return true;
   } catch (err) {
     const safeError = sanitizeMongoMessage(err.message);
@@ -262,6 +273,15 @@ function recordLoginFailure(ip) {
 function recordLoginSuccess(ip) {
   loginAttempts.delete(ip);
 }
+
+app.get('/api/v1/auth/login', (req, res) => {
+  return res.json({
+    status: 'active',
+    message: 'Authentication service is online. Submit an HTTP POST request with JSON { email, password } to authenticate.',
+    method: 'POST',
+    endpoint: '/api/v1/auth/login'
+  });
+});
 
 app.post('/api/v1/auth/login', async (req, res) => {
   const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
@@ -2111,6 +2131,11 @@ app.use((err, req, res, next) => {
 async function startServer() {
   if (mongoInitPromise) {
     await mongoInitPromise;
+  }
+  if (db.users.count() === 0) {
+    console.log('[System] Empty database detected. Auto-seeding default administrative accounts...');
+    const { seedDatabase } = require('./seed');
+    seedDatabase(false);
   }
   app.listen(PORT, () => {
     console.log(`JG Innovative Hub MERN Server running on port ${PORT}`);
