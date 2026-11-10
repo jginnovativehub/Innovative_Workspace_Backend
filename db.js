@@ -61,7 +61,7 @@ class DocumentCollection {
   }
 
   insertOne(doc) {
-    const id = doc.id || doc._id || (this.data.length > 0 ? Math.max(...this.data.map(d => Number(d.id) || 0)) + 1 : 1);
+    const id = doc.id || doc._id || (this.data.length > 0 ? this.data.reduce((max, d) => Math.max(max, Number(d.id) || 0), 0) + 1 : 1);
     const newDoc = {
       ...doc,
       id,
@@ -241,5 +241,6 @@ module.exports = {
   notifications: getCollection('notifications'),
   badges: getCollection('badges'),
   userBadges: getCollection('userBadges'),
-  systemConfigs: getCollection('systemConfigs')
+  systemConfigs: getCollection('systemConfigs'),
+  personalProjects: getCollection('personalProjects')
 };

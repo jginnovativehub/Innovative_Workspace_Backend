@@ -274,6 +274,16 @@ function recordLoginSuccess(ip) {
   loginAttempts.delete(ip);
 }
 
+// Periodic cleanup to prevent unbounded memory growth from stale rate-limit tracking
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of loginAttempts.entries()) {
+    if (now - record.firstAttempt > LOGIN_WINDOW_MS) {
+      loginAttempts.delete(ip);
+    }
+  }
+}, 30 * 60 * 1000).unref();
+
 app.get('/api/v1/auth/login', (req, res) => {
   return res.json({
     status: 'active',
@@ -350,6 +360,21 @@ app.post('/api/v1/users', authenticate, requireManagementOrAdmin, (req, res) => 
     return res.status(400).json({ message: 'Missing required user fields' });
   }
 
+  const validRoles = ['ADMIN', 'CEO', 'COO', 'EMPLOYEE', 'USER'];
+  if (!validRoles.includes(role)) {
+    return res.status(400).json({ message: 'Invalid role specified' });
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(cleanEmail)) {
+    return res.status(400).json({ message: 'Invalid email address format' });
+  }
+
+  if (typeof password !== 'string' || password.length < 6) {
+    return res.status(400).json({ message: 'Password must be at least 6 characters long' });
+  }
+
   // Hierarchy enforcement:
   // Admin can create ADMIN, CEO, COO, EMPLOYEE
   // CEO can create COO, EMPLOYEE
@@ -361,13 +386,14 @@ app.post('/api/v1/users', authenticate, requireManagementOrAdmin, (req, res) => 
     return res.status(403).json({ message: 'COO can only provision Employee accounts' });
   }
 
-  const existing = db.users.findOne({ email });
+  const existing = db.users.findOne({ email: cleanEmail });
   if (existing) {
     return res.status(400).json({ message: 'Email is already registered' });
   }
 
   const newUser = db.users.insertOne({
-    fullName,
+    fullName: fullName.trim(),
+    email: cleanEmail,
     email,
     passwordHash: hashPassword(password),
     role,
@@ -426,12 +452,30 @@ app.patch('/api/v1/users/:id', authenticate, requireManagementOrAdmin, (req, res
 
   const beforeSummary = `role=${user.role}, active=${user.active}`;
   const updates = {};
-  if (req.body.fullName) updates.fullName = req.body.fullName;
-  if (req.body.email) updates.email = req.body.email;
-  if (req.body.role) updates.role = req.body.role;
-  if (req.body.department) updates.department = req.body.department;
+  if (req.body.fullName) updates.fullName = req.body.fullName.trim();
+  if (req.body.email) {
+    const cleanEmail = req.body.email.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      return res.status(400).json({ message: 'Invalid email address format' });
+    }
+    updates.email = cleanEmail;
+  }
+  if (req.body.role) {
+    const roleUpper = String(req.body.role).toUpperCase();
+    if (!['ADMIN', 'CEO', 'COO', 'EMPLOYEE', 'USER'].includes(roleUpper)) {
+      return res.status(400).json({ message: 'Invalid role specified' });
+    }
+    updates.role = roleUpper;
+  }
+  if (req.body.department) updates.department = req.body.department.trim();
   if (typeof req.body.active === 'boolean') updates.active = req.body.active;
-  if (req.body.password) updates.passwordHash = hashPassword(req.body.password);
+  if (req.body.password) {
+    if (typeof req.body.password !== 'string' || req.body.password.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters long' });
+    }
+    updates.passwordHash = hashPassword(req.body.password);
+  }
 
   const updated = db.users.updateById(userId, updates);
   recordAudit(req.user.id, 'USER_UPDATED', 'USER', userId, beforeSummary, `role=${updated.role}, active=${updated.active}`, `${actorRole} user edit`);
@@ -908,6 +952,222 @@ app.delete('/api/v1/projects/:id', authenticate, requireManagementOrAdmin, async
 });
 
 // ---------------------------------------------------------------------
+// 3.5. PERSONAL PROJECT TRACKER (Strictly Private & Confidential)
+// Visible ONLY to the authenticated owner. Never shared with any other user or role.
+// ---------------------------------------------------------------------
+
+function enrichPersonalProject(p) {
+  if (!p) return null;
+  const milestones = Array.isArray(p.milestones) ? p.milestones : [];
+  const tasks = Array.isArray(p.tasks) ? p.tasks : [];
+
+  const completedMilestones = milestones.filter(m => m.completed).length;
+  const completedTasks = tasks.filter(t => t.status === 'DONE').length;
+  const totalItems = milestones.length + tasks.length;
+  const completedItems = completedMilestones + completedTasks;
+  const progressPercentage = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
+
+  return {
+    ...p,
+    milestones,
+    tasks,
+    completedMilestones,
+    completedTasks,
+    totalMilestones: milestones.length,
+    totalTasks: tasks.length,
+    progressPercentage
+  };
+}
+
+// GET all personal projects belonging strictly to req.user
+app.get('/api/v1/personal-projects', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
+  const list = db.personalProjects.find().filter(p => Number(p.userId) === Number(req.user.id));
+  return res.json(list.map(enrichPersonalProject));
+});
+
+// GET single personal project (strictly owner-only)
+app.get('/api/v1/personal-projects/:id', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
+  const proj = db.personalProjects.findById(req.params.id);
+  if (!proj) return res.status(404).json({ message: 'Personal project not found' });
+  if (Number(proj.userId) !== Number(req.user.id)) {
+    return res.status(403).json({ message: 'Access denied: Personal projects are strictly private to their owner.' });
+  }
+  return res.json(enrichPersonalProject(proj));
+});
+
+// POST create new personal project for req.user
+app.post('/api/v1/personal-projects', authenticate, (req, res) => {
+  const { title, description, category, priority, status, startDate, targetDate, milestones, tasks, notes } = req.body;
+  if (!title || !title.trim()) {
+    return res.status(400).json({ message: 'Personal initiative title is required' });
+  }
+
+  const newProj = db.personalProjects.insertOne({
+    userId: Number(req.user.id),
+    title: title.trim(),
+    description: description ? description.trim() : '',
+    category: category ? category.trim() : 'Personal Initiative',
+    priority: priority || 'MEDIUM',
+    status: status || 'IN_PROGRESS',
+    startDate: startDate || new Date().toISOString().split('T')[0],
+    targetDate: targetDate || '',
+    milestones: Array.isArray(milestones) ? milestones : [],
+    tasks: Array.isArray(tasks) ? tasks : [],
+    notes: notes || '',
+    createdAt: new Date().toISOString()
+  });
+
+  return res.status(201).json(enrichPersonalProject(newProj));
+});
+
+// PATCH update personal project (strictly owner-only)
+app.patch('/api/v1/personal-projects/:id', authenticate, (req, res) => {
+  const proj = db.personalProjects.findById(req.params.id);
+  if (!proj) return res.status(404).json({ message: 'Personal project not found' });
+  if (Number(proj.userId) !== Number(req.user.id)) {
+    return res.status(403).json({ message: 'Access denied: Personal projects are strictly private to their owner.' });
+  }
+
+  const updates = {};
+  ['title', 'description', 'category', 'priority', 'status', 'startDate', 'targetDate', 'milestones', 'tasks', 'notes'].forEach(f => {
+    if (req.body[f] !== undefined) updates[f] = req.body[f];
+  });
+
+  const updated = db.personalProjects.updateById(proj.id, updates);
+  return res.json(enrichPersonalProject(updated));
+});
+
+// DELETE personal project (strictly owner-only)
+app.delete('/api/v1/personal-projects/:id', authenticate, (req, res) => {
+  const proj = db.personalProjects.findById(req.params.id);
+  if (!proj) return res.status(404).json({ message: 'Personal project not found' });
+  if (Number(proj.userId) !== Number(req.user.id)) {
+    return res.status(403).json({ message: 'Access denied: Personal projects are strictly private to their owner.' });
+  }
+
+  db.personalProjects.deleteById(proj.id);
+  if (proj._id && proj._id !== proj.id) {
+    db.personalProjects.deleteById(proj._id);
+  }
+  return res.json({ success: true, message: 'Personal project deleted.' });
+});
+
+// POST add milestone to personal project
+app.post('/api/v1/personal-projects/:id/milestones', authenticate, (req, res) => {
+  const proj = db.personalProjects.findById(req.params.id);
+  if (!proj) return res.status(404).json({ message: 'Personal project not found' });
+  if (Number(proj.userId) !== Number(req.user.id)) {
+    return res.status(403).json({ message: 'Access denied: Personal projects are strictly private.' });
+  }
+
+  const { title, dueDate, completed } = req.body;
+  if (!title || !title.trim()) {
+    return res.status(400).json({ message: 'Milestone title is required' });
+  }
+
+  const milestones = Array.isArray(proj.milestones) ? [...proj.milestones] : [];
+  const newMilestone = {
+    id: Date.now().toString(),
+    title: title.trim(),
+    dueDate: dueDate || '',
+    completed: Boolean(completed)
+  };
+  milestones.push(newMilestone);
+
+  const updated = db.personalProjects.updateById(proj.id, { milestones });
+  return res.status(201).json(enrichPersonalProject(updated));
+});
+
+// PATCH toggle or update milestone in personal project
+app.patch('/api/v1/personal-projects/:id/milestones/:mId', authenticate, (req, res) => {
+  const proj = db.personalProjects.findById(req.params.id);
+  if (!proj) return res.status(404).json({ message: 'Personal project not found' });
+  if (Number(proj.userId) !== Number(req.user.id)) {
+    return res.status(403).json({ message: 'Access denied: Personal projects are strictly private.' });
+  }
+
+  const milestones = Array.isArray(proj.milestones) ? [...proj.milestones] : [];
+  const idx = milestones.findIndex(m => String(m.id) === String(req.params.mId));
+  if (idx === -1) return res.status(404).json({ message: 'Milestone not found' });
+
+  milestones[idx] = { ...milestones[idx], ...req.body };
+  const updated = db.personalProjects.updateById(proj.id, { milestones });
+  return res.json(enrichPersonalProject(updated));
+});
+
+// DELETE milestone from personal project
+app.delete('/api/v1/personal-projects/:id/milestones/:mId', authenticate, (req, res) => {
+  const proj = db.personalProjects.findById(req.params.id);
+  if (!proj) return res.status(404).json({ message: 'Personal project not found' });
+  if (Number(proj.userId) !== Number(req.user.id)) {
+    return res.status(403).json({ message: 'Access denied: Personal projects are strictly private.' });
+  }
+
+  const milestones = (Array.isArray(proj.milestones) ? proj.milestones : []).filter(m => String(m.id) !== String(req.params.mId));
+  const updated = db.personalProjects.updateById(proj.id, { milestones });
+  return res.json(enrichPersonalProject(updated));
+});
+
+// POST add task to personal project
+app.post('/api/v1/personal-projects/:id/tasks', authenticate, (req, res) => {
+  const proj = db.personalProjects.findById(req.params.id);
+  if (!proj) return res.status(404).json({ message: 'Personal project not found' });
+  if (Number(proj.userId) !== Number(req.user.id)) {
+    return res.status(403).json({ message: 'Access denied: Personal projects are strictly private.' });
+  }
+
+  const { title, priority, dueDate, status } = req.body;
+  if (!title || !title.trim()) {
+    return res.status(400).json({ message: 'Task title is required' });
+  }
+
+  const tasks = Array.isArray(proj.tasks) ? [...proj.tasks] : [];
+  const newTask = {
+    id: Date.now().toString(),
+    title: title.trim(),
+    priority: priority || 'MEDIUM',
+    dueDate: dueDate || '',
+    status: status || 'TODO'
+  };
+  tasks.push(newTask);
+
+  const updated = db.personalProjects.updateById(proj.id, { tasks });
+  return res.status(201).json(enrichPersonalProject(updated));
+});
+
+// PATCH toggle or update task in personal project
+app.patch('/api/v1/personal-projects/:id/tasks/:tId', authenticate, (req, res) => {
+  const proj = db.personalProjects.findById(req.params.id);
+  if (!proj) return res.status(404).json({ message: 'Personal project not found' });
+  if (Number(proj.userId) !== Number(req.user.id)) {
+    return res.status(403).json({ message: 'Access denied: Personal projects are strictly private.' });
+  }
+
+  const tasks = Array.isArray(proj.tasks) ? [...proj.tasks] : [];
+  const idx = tasks.findIndex(t => String(t.id) === String(req.params.tId));
+  if (idx === -1) return res.status(404).json({ message: 'Task not found' });
+
+  tasks[idx] = { ...tasks[idx], ...req.body };
+  const updated = db.personalProjects.updateById(proj.id, { tasks });
+  return res.json(enrichPersonalProject(updated));
+});
+
+// DELETE task from personal project
+app.delete('/api/v1/personal-projects/:id/tasks/:tId', authenticate, (req, res) => {
+  const proj = db.personalProjects.findById(req.params.id);
+  if (!proj) return res.status(404).json({ message: 'Personal project not found' });
+  if (Number(proj.userId) !== Number(req.user.id)) {
+    return res.status(403).json({ message: 'Access denied: Personal projects are strictly private.' });
+  }
+
+  const tasks = (Array.isArray(proj.tasks) ? proj.tasks : []).filter(t => String(t.id) !== String(req.params.tId));
+  const updated = db.personalProjects.updateById(proj.id, { tasks });
+  return res.json(enrichPersonalProject(updated));
+});
+
+// ---------------------------------------------------------------------
 // 4. MILESTONES (SRS MILE-01 to MILE-03, 5.3)
 // ---------------------------------------------------------------------
 
@@ -998,6 +1258,11 @@ app.patch('/api/v1/milestones/:id', authenticate, requireManagementOrAdmin, (req
   const ms = db.milestones.findById(mId);
   if (!ms) return res.status(404).json({ message: 'Milestone not found' });
 
+  // Authorization Check: Must be assigned to the project or have management authority
+  if (!canAccessProject(req.user, ms.projectId)) {
+    return res.status(403).json({ message: 'Access denied: You are not assigned to this project' });
+  }
+
   const beforeSummary = `title=${ms.title}, status=${ms.status}, dueDate=${ms.dueDate}`;
   const updates = {};
   ['title', 'description', 'sequence', 'ownerId', 'reviewerId', 'startDate', 'dueDate', 'status', 'acceptanceCriteria'].forEach(f => {
@@ -1024,6 +1289,11 @@ app.post('/api/v1/milestones/:id/submit-review', authenticate, (req, res) => {
   const mId = Number(req.params.id);
   const ms = db.milestones.findById(mId);
   if (!ms) return res.status(404).json({ message: 'Milestone not found' });
+
+  // Authorization Check: Must be assigned to the project or have management authority
+  if (!canAccessProject(req.user, ms.projectId)) {
+    return res.status(403).json({ message: 'Access denied: You are not assigned to this project' });
+  }
 
   // SRS AT-06: Status MUST become SUBMITTED_FOR_REVIEW, never APPROVED directly!
   const { evidenceNotes, evidenceUrl } = req.body;
@@ -1055,6 +1325,11 @@ app.post('/api/v1/milestones/:id/review', authenticate, (req, res) => {
   const mId = Number(req.params.id);
   const ms = db.milestones.findById(mId);
   if (!ms) return res.status(404).json({ message: 'Milestone not found' });
+
+  // Authorization Check: Must be assigned to the project or have management authority
+  if (!canAccessProject(req.user, ms.projectId)) {
+    return res.status(403).json({ message: 'Access denied: You are not assigned to this project' });
+  }
 
   // Must be designated reviewer or executive management
   const isReviewer = ms.reviewerId === req.user.id;
@@ -1275,6 +1550,10 @@ app.post('/api/v1/tasks/:id/updates', authenticate, (req, res) => {
   const task = db.tasks.findById(taskId);
   if (!task) return res.status(404).json({ message: 'Task not found' });
 
+  if (!canAccessProject(req.user, task.projectId)) {
+    return res.status(403).json({ message: 'Access denied: You do not have access to this project' });
+  }
+
   const { summary, impact, proposedSolution, expectedResolutionDate, supportNeeded, workLog } = req.body;
   if (!summary || !impact || !proposedSolution || !supportNeeded) {
     return res.status(400).json({ message: 'Summary, impact, proposed solution, and support needed are mandatory for blocker reports' });
@@ -1337,6 +1616,10 @@ app.post('/api/v1/tasks/:id/submit-review', authenticate, (req, res) => {
   const taskId = Number(req.params.id);
   const task = db.tasks.findById(taskId);
   if (!task) return res.status(404).json({ message: 'Task not found' });
+
+  if (!canAccessProject(req.user, task.projectId)) {
+    return res.status(403).json({ message: 'Access denied: You do not have access to this project' });
+  }
 
   const { notes } = req.body;
   db.tasks.updateById(taskId, {
@@ -1450,6 +1733,10 @@ app.post('/api/v1/tasks/:id/request-schedule-change', authenticate, (req, res) =
   const task = db.tasks.findById(taskId);
   if (!task) return res.status(404).json({ message: 'Task not found' });
 
+  if (!canAccessProject(req.user, task.projectId)) {
+    return res.status(403).json({ message: 'Access denied: You do not have access to this project' });
+  }
+
   const { newDueDate, reason } = req.body;
   if (!newDueDate || !reason) {
     return res.status(400).json({ message: 'Proposed new due date and reason are required' });
@@ -1505,8 +1792,8 @@ app.get('/api/v1/weekly-reports', authenticate, async (req, res) => {
 
   let list = db.weeklyReports.find();
 
-  // SRS AT-01 Rule: Employee can ONLY view their own reports!
-  if (req.user.role === 'EMPLOYEE') {
+  // SRS AT-01 Rule: Non-executive users can ONLY view their own reports!
+  if (!['ADMIN', 'CEO', 'COO'].includes(req.user.role)) {
     list = list.filter(r => r.userId === req.user.id);
   } else if (req.query.userId) {
     list = list.filter(r => r.userId === Number(req.query.userId));
@@ -1866,7 +2153,7 @@ app.post('/api/v1/notifications/read-all', authenticate, (req, res) => {
   return res.json({ status: 'ok', count: unread.length });
 });
 
-app.get('/api/v1/audit-events', authenticate, requireManagementOrAdmin, async (req, res) => {
+app.get(['/api/v1/audit-events', '/api/v1/audit'], authenticate, requireManagementOrAdmin, async (req, res) => {
   await Promise.all([
     db.auditEvents.syncFromMongo(),
     db.users.syncFromMongo()
@@ -1891,30 +2178,29 @@ app.get('/api/v1/audit-events', authenticate, requireManagementOrAdmin, async (r
   return res.json(results);
 });
 
-// Alias for Admin Portal audit trail
-app.get('/api/v1/audit', authenticate, requireManagementOrAdmin, async (req, res) => {
-  await Promise.all([
-    db.auditEvents.syncFromMongo(),
-    db.users.syncFromMongo()
-  ]);
+// Delete single audit event (Admin only)
+app.delete(['/api/v1/audit-events/:id', '/api/v1/audit/:id'], authenticate, requireAdmin, async (req, res) => {
+  const targetId = req.params.id;
+  const existing = db.auditEvents.findById(targetId);
+  if (!existing) {
+    return res.status(404).json({ message: 'Audit event not found' });
+  }
+  db.auditEvents.deleteById(targetId);
+  return res.json({ status: 'ok', message: `Audit event #${targetId} deleted successfully`, deletedId: targetId });
+});
 
-  const { actorId, entityType } = req.query;
-  let list = db.auditEvents.find();
-  if (actorId) list = list.filter(e => e.actorId === Number(actorId));
-  if (entityType) list = list.filter(e => e.entityType === entityType);
-
-  const results = list
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .slice(0, 100)
-    .map(e => {
-      const actor = e.actorId ? db.users.findById(e.actorId) : null;
-      return {
-        ...e,
-        actorName: actor ? actor.fullName : 'System'
-      };
-    });
-
-  return res.json(results);
+// Bulk delete audit events (Admin only)
+app.post(['/api/v1/audit-events/bulk-delete', '/api/v1/audit/bulk-delete'], authenticate, requireAdmin, async (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ message: 'Array of audit event IDs is required' });
+  }
+  let count = 0;
+  for (const id of ids) {
+    const success = db.auditEvents.deleteById(id);
+    if (success) count++;
+  }
+  return res.json({ status: 'ok', deletedCount: count, message: `${count} audit event(s) deleted successfully` });
 });
 
 // ---------------------------------------------------------------------
@@ -2024,7 +2310,12 @@ app.get('/api/v1/config', authenticate, async (req, res) => {
 });
 
 app.patch('/api/v1/config', authenticate, requireAdmin, (req, res) => {
-  const updated = db.systemConfigs.updateById(1, req.body);
+  const allowedFields = ['reportingWeekStart', 'reportingDeadlineDay', 'reportingDeadlineTime', 'companyTimezone', 'maxFileSizeMb', 'retentionDays'];
+  const cleanConfig = {};
+  allowedFields.forEach(f => {
+    if (req.body[f] !== undefined) cleanConfig[f] = req.body[f];
+  });
+  const updated = db.systemConfigs.updateById(1, cleanConfig);
   recordAudit(req.user.id, 'SYSTEM_CONFIG_UPDATED', 'CONFIG', 1, null, 'Settings saved', 'Admin configuration');
   return res.json(updated);
 });
