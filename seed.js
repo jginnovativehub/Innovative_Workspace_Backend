@@ -687,6 +687,53 @@ function seedDatabase(force = false) {
     createdAt: '2026-10-05T10:00:00Z'
   });
 
+  db.notifications.insertOne({
+    id: 5,
+    recipientId: admin.id,
+    recipientRole: 'ADMIN',
+    type: 'USER_PROVISIONED',
+    title: 'Account Provisioned: Alex Chen',
+    body: 'Alex Chen (Hardware Lead) created with EMPLOYEE role under Hardware & Electrical.',
+    targetType: 'USER',
+    targetId: alex.id,
+    createdAt: '2026-10-10T09:15:00Z'
+  });
+
+  db.notifications.insertOne({
+    id: 6,
+    recipientId: admin.id,
+    recipientRole: 'ADMIN',
+    type: 'BLOCKER_ALERT',
+    title: 'Critical Blocker Escalated: Power Board Rev B routing',
+    body: 'Task blocker escalated to Platform Admin: Component supply shortage requires review.',
+    targetType: 'TASK',
+    targetId: t3.id,
+    createdAt: '2026-10-10T14:10:00Z'
+  });
+
+  db.notifications.insertOne({
+    id: 7,
+    recipientId: admin.id,
+    recipientRole: 'ADMIN',
+    type: 'PROJECT_CREATED',
+    title: 'Project Registered: PRJ-PPS-01',
+    body: 'Smart Grid Power Conditioning System registered in governance console.',
+    targetType: 'PROJECT',
+    targetId: proj1.id,
+    createdAt: '2026-08-01T10:05:00Z'
+  });
+
+  db.notifications.insertOne({
+    id: 8,
+    recipientId: admin.id,
+    recipientRole: 'ADMIN',
+    type: 'SECURITY_ALERT',
+    title: 'Security Notice: Audit Log Verification Complete',
+    body: 'All audit event checksums verified. Log retention set to 365 days.',
+    targetType: 'SYSTEM',
+    createdAt: '2026-10-10T15:00:00Z'
+  });
+
   // 9. Audit Events (SRS AUD-01)
   db.auditEvents.insertOne({
     id: 1,
@@ -735,6 +782,76 @@ function seedDatabase(force = false) {
     reason: 'Vendor footprint modification requires extra thermal copper re-simulation',
     timestamp: '2026-10-10T15:30:00Z'
   });
+
+  // 14. Personal Projects (Private initiatives for users)
+  if (db.personalProjects) {
+    db.personalProjects.insertOne({
+      id: 1,
+      userId: kishor.id,
+      title: 'Cloud Architecture & DevOps Certification',
+      description: 'Personal learning roadmap for multi-cloud deployments, Terraform automation, and Kubernetes orchestration.',
+      category: 'Learning',
+      priority: 'HIGH',
+      status: 'IN_PROGRESS',
+      startDate: '2026-10-01',
+      targetDate: '2026-12-15',
+      notes: 'Weekly practice exam on Sundays. Review AWS Transit Gateway and VPC Peering notes.',
+      milestones: [
+        { id: '101', title: 'Complete IAM, Networking & VPC Architecture', dueDate: '2026-10-25', completed: true },
+        { id: '102', title: 'Build Serverless Microservices with Lambda & DynamoDB', dueDate: '2026-11-20', completed: false },
+        { id: '103', title: 'Pass AWS Solutions Architect Mock Exam (>85%)', dueDate: '2026-12-10', completed: false }
+      ],
+      tasks: [
+        { id: '1001', title: 'Review Kubernetes ingress controllers & cert-manager', status: 'DONE', priority: 'HIGH', dueDate: '2026-10-18' },
+        { id: '1002', title: 'Set up Terraform state backend on S3 with DynamoDB locking', status: 'DONE', priority: 'MEDIUM', dueDate: '2026-10-28' },
+        { id: '1003', title: 'Implement Prometheus & Grafana telemetry dashboards', status: 'TODO', priority: 'HIGH', dueDate: '2026-11-15' },
+        { id: '1004', title: 'Complete 3 full-length timed practice exams', status: 'TODO', priority: 'MEDIUM', dueDate: '2026-12-05' }
+      ]
+    });
+
+    db.personalProjects.insertOne({
+      id: 2,
+      userId: alex.id,
+      title: 'Embedded Firmware & RTOS Mastery',
+      description: 'Private firmware research track exploring FreeRTOS task synchronization and low-power hardware modes.',
+      category: 'Development',
+      priority: 'MEDIUM',
+      status: 'IN_PROGRESS',
+      startDate: '2026-09-15',
+      targetDate: '2026-11-30',
+      notes: 'Hardware logic analyzer arrives next week.',
+      milestones: [
+        { id: '201', title: 'Configure STM32 FreeRTOS Kernel Port', dueDate: '2026-10-10', completed: true },
+        { id: '202', title: 'Write Ring Buffer UART DMA Driver', dueDate: '2026-11-15', completed: false }
+      ],
+      tasks: [
+        { id: '2001', title: 'Benchmark FreeRTOS context switch latency', status: 'DONE', priority: 'MEDIUM', dueDate: '2026-10-08' },
+        { id: '2002', title: 'Debug circular DMA buffer race conditions', status: 'TODO', priority: 'HIGH', dueDate: '2026-11-12' }
+      ]
+    });
+
+    db.personalProjects.insertOne({
+      id: 3,
+      userId: admin.id,
+      title: 'System Infrastructure Security & Compliance Audit',
+      description: 'Administrator maintenance tasks, automated vulnerability scanning, and audit trail log retention policies.',
+      category: 'System Maintenance',
+      priority: 'CRITICAL',
+      status: 'IN_PROGRESS',
+      startDate: '2026-10-01',
+      targetDate: '2026-12-31',
+      notes: 'All audit events must be backed up before retention truncation.',
+      milestones: [
+        { id: '301', title: 'Verify MongoDB TLS 1.3 & Replica Set Encryption', dueDate: '2026-10-20', completed: true },
+        { id: '302', title: 'Complete Penetration Test on Review & Audit Endpoints', dueDate: '2026-11-25', completed: false }
+      ],
+      tasks: [
+        { id: '3001', title: 'Rotate JWT signing keys & verify session invalidation', status: 'DONE', priority: 'CRITICAL', dueDate: '2026-10-15' },
+        { id: '3002', title: 'Test audit log bulk deletion and sanitization', status: 'DONE', priority: 'HIGH', dueDate: '2026-11-01' },
+        { id: '3003', title: 'Automate weekly database health check script', status: 'TODO', priority: 'MEDIUM', dueDate: '2026-11-20' }
+      ]
+    });
+  }
 
   console.log('Seed completed successfully! All SRS demo entities created.');
 }

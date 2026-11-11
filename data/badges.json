@@ -1,0 +1,62 @@
+[
+  {
+    "id": 1,
+    "code": "sprint_champion",
+    "title": "Sprint Champion",
+    "description": "Submitted a milestone deliverable ahead of deadline with full acceptance test evidence.",
+    "icon": "Zap",
+    "xpBonus": 150,
+    "_id": "1",
+    "createdAt": "2026-11-11T15:11:52.798Z"
+  },
+  {
+    "id": 2,
+    "code": "flawless_report",
+    "title": "Flawless Report",
+    "description": "Weekly report accepted on first review with zero changes requested.",
+    "icon": "Award",
+    "xpBonus": 100,
+    "_id": "2",
+    "createdAt": "2026-11-11T15:11:52.801Z"
+  },
+  {
+    "id": 3,
+    "code": "blocker_buster",
+    "title": "Blocker Buster",
+    "description": "Reported and resolved a critical risk blocker with an approved recovery roadmap.",
+    "icon": "ShieldCheck",
+    "xpBonus": 120,
+    "_id": "3",
+    "createdAt": "2026-11-11T15:11:52.802Z"
+  },
+  {
+    "id": 4,
+    "code": "zero_overdue",
+    "title": "Zero Overdue Streak",
+    "description": "Achieved 4 consecutive weeks with 100% on-time milestone & task delivery.",
+    "icon": "Target",
+    "xpBonus": 200,
+    "_id": "4",
+    "createdAt": "2026-11-11T15:11:52.803Z"
+  },
+  {
+    "id": 5,
+    "code": "iron_reviewer",
+    "title": "Iron Reviewer",
+    "description": "Turned around pending deliverable reviews in under 24 hours.",
+    "icon": "CheckCheck",
+    "xpBonus": 100,
+    "_id": "5",
+    "createdAt": "2026-11-11T15:11:52.803Z"
+  },
+  {
+    "id": 6,
+    "code": "lead_pioneer",
+    "title": "Pioneer Architect",
+    "description": "Formulated and led company technical architecture specifications.",
+    "icon": "Crown",
+    "xpBonus": 250,
+    "_id": "6",
+    "createdAt": "2026-11-11T15:11:52.804Z"
+  }
+]

@@ -1,0 +1,59 @@
+[
+  {
+    "id": 1,
+    "reportId": 1,
+    "versionNumber": 1,
+    "completedThisWeek": "Finalized thermal dissipation calculations for Power Station 1500W stage; assembled Rev B chassis frame.",
+    "inProgress": "Routing heavy copper busbar on Power Board; collaborating with machine shop on tolerance checks.",
+    "blockersRisks": "Discontinuation of primary MOSFET by vendor. Impact is manageable via dual-footprint pad layout.",
+    "reasonForDelay": "Distributor stock-out required alternative component qualification.",
+    "proposedSolution": "Procure Vishay SQJQ144ER samples and re-route pad layout to dual-compatibility.",
+    "nextWeekPlan": "Complete board layout, submit gerbers to fab house, test thermal fit with mock CNC block.",
+    "supportDecisionsRequired": "Approval for expedited sample purchase order PO-8849 ($42).",
+    "submittedAt": "2026-10-09T16:30:00Z",
+    "submittedBy": 4,
+    "_id": "1",
+    "createdAt": "2026-11-11T15:11:53.715Z"
+  },
+  {
+    "id": 2,
+    "reportId": 2,
+    "versionNumber": 1,
+    "completedThisWeek": "Wrote SoC coulomb counting code.",
+    "inProgress": "Testing display drivers.",
+    "blockersRisks": "None",
+    "nextWeekPlan": "Finish UI.",
+    "submittedAt": "2026-10-09T17:00:00Z",
+    "submittedBy": 5,
+    "_id": "2",
+    "createdAt": "2026-11-11T15:11:53.716Z"
+  },
+  {
+    "id": 3,
+    "reportId": 2,
+    "versionNumber": 2,
+    "completedThisWeek": "Integrated Kalman filter Coulomb counter into STM32 firmware; established BLE 5.0 advertising GATT service.",
+    "inProgress": "Debugging OLED refresh stuttering when high-rate ADC interrupts fire; bench testing fault cut-off response.",
+    "blockersRisks": "Interrupt priority collision between DMA SPI display update and ADC timer trigger.",
+    "proposedSolution": "Lower OLED DMA interrupt priority and utilize double-buffering in background loop.",
+    "nextWeekPlan": "Capture oscilloscope waveform traces for overcurrent cut-off; package release v0.9.5.",
+    "supportDecisionsRequired": "Access to high-speed digital oscilloscope in Lab 3.",
+    "submittedAt": "2026-10-10T10:00:00Z",
+    "submittedBy": 5,
+    "_id": "3",
+    "createdAt": "2026-11-11T15:11:53.716Z"
+  },
+  {
+    "id": 4,
+    "reportId": 3,
+    "versionNumber": 1,
+    "completedThisWeek": "Conducted strategic investor briefing; approved capital expenditure for SMT prototyping line.",
+    "inProgress": "Reviewing milestone acceptance standards across Power Station and AI Vision initiatives.",
+    "blockersRisks": "Customs clearance lead times for imported thermal chambers.",
+    "nextWeekPlan": "Executive milestone review for Milestone 3 (Firmware); sign supply agreements for battery cells.",
+    "submittedAt": "2026-10-09T18:00:00Z",
+    "submittedBy": 2,
+    "_id": "4",
+    "createdAt": "2026-11-11T15:11:53.717Z"
+  }
+]

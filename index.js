@@ -25,7 +25,7 @@ const {
   detectMilestoneCycles,
   detectTaskCycles
 } = require('./permissions');
-const { awardXP, checkBadge, calculateLevel, getLevelTitle } = require('./gamification');
+const { awardXP, checkBadge, calculateLevel, getLevelTitle, calculateUserStreak, incrementUserStreak } = require('./gamification');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -134,7 +134,7 @@ async function connectMongo(uri) {
   const cleanUri = uri.trim().replace(/^"|"$/g, '');
   try {
     console.log('[MongoDB] Connecting to database...');
-    await mongoose.connect(cleanUri);
+    await mongoose.connect(cleanUri, { serverSelectionTimeoutMS: 8000 });
     const dbName = mongoose.connection.name || 'innovative_hub';
     mongoStatus = {
       connected: true,
@@ -161,10 +161,23 @@ async function connectMongo(uri) {
   }
 }
 
-// Connect MongoDB on boot
+// Connect MongoDB on boot with smart failover
 let mongoInitPromise = null;
-if (process.env.MONGODB_URI && process.env.MONGODB_URI.trim()) {
-  mongoInitPromise = connectMongo(process.env.MONGODB_URI);
+const primaryUri = (process.env.MONGODB_URI || '').trim();
+const backupUri = (process.env.MONGODB_URI_BACKUP || '').trim();
+
+if (primaryUri || backupUri) {
+  mongoInitPromise = (async () => {
+    let success = false;
+    if (primaryUri) {
+      success = await connectMongo(primaryUri);
+    }
+    if (!success && backupUri) {
+      console.log('[MongoDB] Primary URI connection unsuccessful. Attempting failover to backup cluster...');
+      success = await connectMongo(backupUri);
+    }
+    return success;
+  })();
 }
 
 function recordAudit(actorId, action, entityType, entityId, beforeSummary = null, afterSummary = null, reason = null) {
@@ -230,8 +243,11 @@ function sanitizeUser(user) {
     };
   }).filter(Boolean);
 
+  const dynamicStreak = calculateUserStreak(user.id);
+
   return {
     ...rest,
+    streakCount: dynamicStreak,
     badges
   };
 }
@@ -475,6 +491,16 @@ app.patch('/api/v1/users/:id', authenticate, requireManagementOrAdmin, (req, res
       return res.status(400).json({ message: 'Password must be at least 6 characters long' });
     }
     updates.passwordHash = hashPassword(req.body.password);
+  }
+
+  if (req.body.streakCount !== undefined) {
+    updates.streakCount = Math.max(0, Number(req.body.streakCount) || 0);
+  }
+  if (req.body.xp !== undefined) {
+    const newXp = Math.max(0, Number(req.body.xp) || 0);
+    updates.xp = newXp;
+    updates.level = calculateLevel(newXp);
+    updates.avatarTitle = getLevelTitle(updates.level);
   }
 
   const updated = db.users.updateById(userId, updates);
@@ -967,8 +993,14 @@ function enrichPersonalProject(p) {
   const completedItems = completedMilestones + completedTasks;
   const progressPercentage = totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
 
+  const rawId = p.id !== undefined && p.id !== null ? p.id : (p._id !== undefined && p._id !== null ? p._id : 1);
+  const numId = Number(rawId);
+  const id = !isNaN(numId) && numId > 0 ? numId : rawId;
+
   return {
     ...p,
+    id,
+    _id: p._id ? String(p._id) : String(id),
     milestones,
     tasks,
     completedMilestones,
@@ -998,7 +1030,8 @@ app.get('/api/v1/personal-projects/:id', authenticate, async (req, res) => {
 });
 
 // POST create new personal project for req.user
-app.post('/api/v1/personal-projects', authenticate, (req, res) => {
+app.post('/api/v1/personal-projects', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
   const { title, description, category, priority, status, startDate, targetDate, milestones, tasks, notes } = req.body;
   if (!title || !title.trim()) {
     return res.status(400).json({ message: 'Personal initiative title is required' });
@@ -1023,7 +1056,8 @@ app.post('/api/v1/personal-projects', authenticate, (req, res) => {
 });
 
 // PATCH update personal project (strictly owner-only)
-app.patch('/api/v1/personal-projects/:id', authenticate, (req, res) => {
+app.patch('/api/v1/personal-projects/:id', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
   const proj = db.personalProjects.findById(req.params.id);
   if (!proj) return res.status(404).json({ message: 'Personal project not found' });
   if (Number(proj.userId) !== Number(req.user.id)) {
@@ -1040,7 +1074,8 @@ app.patch('/api/v1/personal-projects/:id', authenticate, (req, res) => {
 });
 
 // DELETE personal project (strictly owner-only)
-app.delete('/api/v1/personal-projects/:id', authenticate, (req, res) => {
+app.delete('/api/v1/personal-projects/:id', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
   const proj = db.personalProjects.findById(req.params.id);
   if (!proj) return res.status(404).json({ message: 'Personal project not found' });
   if (Number(proj.userId) !== Number(req.user.id)) {
@@ -1055,7 +1090,8 @@ app.delete('/api/v1/personal-projects/:id', authenticate, (req, res) => {
 });
 
 // POST add milestone to personal project
-app.post('/api/v1/personal-projects/:id/milestones', authenticate, (req, res) => {
+app.post('/api/v1/personal-projects/:id/milestones', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
   const proj = db.personalProjects.findById(req.params.id);
   if (!proj) return res.status(404).json({ message: 'Personal project not found' });
   if (Number(proj.userId) !== Number(req.user.id)) {
@@ -1081,7 +1117,8 @@ app.post('/api/v1/personal-projects/:id/milestones', authenticate, (req, res) =>
 });
 
 // PATCH toggle or update milestone in personal project
-app.patch('/api/v1/personal-projects/:id/milestones/:mId', authenticate, (req, res) => {
+app.patch('/api/v1/personal-projects/:id/milestones/:mId', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
   const proj = db.personalProjects.findById(req.params.id);
   if (!proj) return res.status(404).json({ message: 'Personal project not found' });
   if (Number(proj.userId) !== Number(req.user.id)) {
@@ -1098,7 +1135,8 @@ app.patch('/api/v1/personal-projects/:id/milestones/:mId', authenticate, (req, r
 });
 
 // DELETE milestone from personal project
-app.delete('/api/v1/personal-projects/:id/milestones/:mId', authenticate, (req, res) => {
+app.delete('/api/v1/personal-projects/:id/milestones/:mId', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
   const proj = db.personalProjects.findById(req.params.id);
   if (!proj) return res.status(404).json({ message: 'Personal project not found' });
   if (Number(proj.userId) !== Number(req.user.id)) {
@@ -1111,7 +1149,8 @@ app.delete('/api/v1/personal-projects/:id/milestones/:mId', authenticate, (req, 
 });
 
 // POST add task to personal project
-app.post('/api/v1/personal-projects/:id/tasks', authenticate, (req, res) => {
+app.post('/api/v1/personal-projects/:id/tasks', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
   const proj = db.personalProjects.findById(req.params.id);
   if (!proj) return res.status(404).json({ message: 'Personal project not found' });
   if (Number(proj.userId) !== Number(req.user.id)) {
@@ -1138,7 +1177,8 @@ app.post('/api/v1/personal-projects/:id/tasks', authenticate, (req, res) => {
 });
 
 // PATCH toggle or update task in personal project
-app.patch('/api/v1/personal-projects/:id/tasks/:tId', authenticate, (req, res) => {
+app.patch('/api/v1/personal-projects/:id/tasks/:tId', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
   const proj = db.personalProjects.findById(req.params.id);
   if (!proj) return res.status(404).json({ message: 'Personal project not found' });
   if (Number(proj.userId) !== Number(req.user.id)) {
@@ -1155,7 +1195,8 @@ app.patch('/api/v1/personal-projects/:id/tasks/:tId', authenticate, (req, res) =
 });
 
 // DELETE task from personal project
-app.delete('/api/v1/personal-projects/:id/tasks/:tId', authenticate, (req, res) => {
+app.delete('/api/v1/personal-projects/:id/tasks/:tId', authenticate, async (req, res) => {
+  await db.personalProjects.syncFromMongo();
   const proj = db.personalProjects.findById(req.params.id);
   if (!proj) return res.status(404).json({ message: 'Personal project not found' });
   if (Number(proj.userId) !== Number(req.user.id)) {
@@ -1885,6 +1926,7 @@ app.post('/api/v1/weekly-reports', authenticate, (req, res) => {
 
   if (!isDraft) {
     awardXP(req.user.id, 50, `Submitted weekly report for period ${periodStart}`);
+    incrementUserStreak(req.user.id, `Weekly report submitted on-time for ${periodStart}`);
     recordAudit(req.user.id, 'WEEKLY_REPORT_SUBMITTED', 'WEEKLY_REPORT', report.id, null, `Version ${report.currentVersion}`, 'Weekly reporting cycle');
   }
 
@@ -2111,11 +2153,20 @@ app.get('/api/v1/notifications', authenticate, async (req, res) => {
   await db.notifications.syncFromMongo();
   const uid = String(req.user.id || req.user._id);
   const uRole = (req.user.role || '').toUpperCase();
+  const showAll = (req.query.all === 'true' || req.query.all === '1') && uRole === 'ADMIN';
+
   const notifs = db.notifications.find()
     .filter(n => {
+      if (showAll) return true;
       // Direct recipient user match
       if (n.recipientId !== undefined && n.recipientId !== null) {
-        return String(n.recipientId) === uid;
+        if (String(n.recipientId) === uid) return true;
+        if (n.recipientRole && String(n.recipientRole).toUpperCase() === uRole) return true;
+        // Admins also receive all critical blocker escalations & governance notifications
+        if (uRole === 'ADMIN' && (n.type === 'BLOCKER_ALERT' || n.type === 'USER_PROVISIONED' || n.type === 'PROJECT_DELETED' || n.type === 'PROJECT_CREATED' || n.type === 'SECURITY_ALERT')) {
+          return true;
+        }
+        return false;
       }
       // Role-based notification match
       if (n.recipientRole) {
@@ -2125,22 +2176,30 @@ app.get('/api/v1/notifications', authenticate, async (req, res) => {
       return true;
     })
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .slice(0, 50);
+    .slice(0, 100);
   return res.json(notifs);
 });
 
-app.post('/api/v1/notifications/:id/read', authenticate, (req, res) => {
+app.delete('/api/v1/notifications/:id', authenticate, async (req, res) => {
   const nId = req.params.id;
-  const updated = db.notifications.updateById(nId, { readAt: new Date().toISOString() });
+  await db.notifications.deleteById(nId);
+  return res.json({ status: 'ok', message: 'Notification dismissed' });
+});
+
+app.post('/api/v1/notifications/:id/read', authenticate, async (req, res) => {
+  const nId = req.params.id;
+  const updated = await db.notifications.updateById(nId, { readAt: new Date().toISOString() });
   return res.json({ status: 'ok', notification: updated });
 });
 
-app.post('/api/v1/notifications/read-all', authenticate, (req, res) => {
+app.post('/api/v1/notifications/read-all', authenticate, async (req, res) => {
   const uid = String(req.user.id || req.user._id);
   const uRole = (req.user.role || '').toUpperCase();
   const now = new Date().toISOString();
   const unread = db.notifications.find().filter(n => {
     if (n.readAt) return false;
+    // For ADMIN, all notifications in their management/governance view should be marked read
+    if (uRole === 'ADMIN') return true;
     if (n.recipientId !== undefined && n.recipientId !== null) {
       return String(n.recipientId) === uid;
     }
@@ -2149,7 +2208,9 @@ app.post('/api/v1/notifications/read-all', authenticate, (req, res) => {
     }
     return true;
   });
-  unread.forEach(n => db.notifications.updateById(n.id || n._id, { readAt: now }));
+  for (const n of unread) {
+    await db.notifications.updateById(n.id || n._id, { readAt: now });
+  }
   return res.json({ status: 'ok', count: unread.length });
 });
 

@@ -1,0 +1,51 @@
+[
+  {
+    "milestoneId": 2,
+    "dependsOnMilestoneId": 1,
+    "id": 1,
+    "_id": "1",
+    "createdAt": "2026-11-11T15:11:53.693Z"
+  },
+  {
+    "milestoneId": 3,
+    "dependsOnMilestoneId": 2,
+    "id": 2,
+    "_id": "2",
+    "createdAt": "2026-11-11T15:11:53.694Z"
+  },
+  {
+    "milestoneId": 4,
+    "dependsOnMilestoneId": 2,
+    "id": 3,
+    "_id": "3",
+    "createdAt": "2026-11-11T15:11:53.694Z"
+  },
+  {
+    "milestoneId": 5,
+    "dependsOnMilestoneId": 4,
+    "id": 4,
+    "_id": "4",
+    "createdAt": "2026-11-11T15:11:53.695Z"
+  },
+  {
+    "milestoneId": 6,
+    "dependsOnMilestoneId": 5,
+    "id": 5,
+    "_id": "5",
+    "createdAt": "2026-11-11T15:11:53.696Z"
+  },
+  {
+    "milestoneId": 7,
+    "dependsOnMilestoneId": 6,
+    "id": 6,
+    "_id": "6",
+    "createdAt": "2026-11-11T15:11:53.696Z"
+  },
+  {
+    "milestoneId": 8,
+    "dependsOnMilestoneId": 7,
+    "id": 7,
+    "_id": "7",
+    "createdAt": "2026-11-11T15:11:53.697Z"
+  }
+]

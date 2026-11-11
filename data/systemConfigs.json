@@ -1,0 +1,13 @@
+[
+  {
+    "id": 1,
+    "reportingWeekStart": "Monday",
+    "reportingDeadlineDay": "Friday",
+    "reportingDeadlineTime": "17:00",
+    "companyTimezone": "Asia/Kolkata",
+    "maxFileSizeMb": 25,
+    "retentionDays": 365,
+    "_id": "1",
+    "createdAt": "2026-11-11T15:11:52.794Z"
+  }
+]

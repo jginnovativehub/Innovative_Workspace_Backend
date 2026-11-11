@@ -1,0 +1,47 @@
+[
+  {
+    "userId": 2,
+    "badgeId": 6,
+    "reason": "Formulated strategic company baseline",
+    "awardedAt": "2026-08-10T10:00:00Z",
+    "id": 1,
+    "_id": "1",
+    "createdAt": "2026-11-11T15:11:53.681Z"
+  },
+  {
+    "userId": 3,
+    "badgeId": 5,
+    "reason": "Rapid review response time < 24 hrs",
+    "awardedAt": "2026-09-01T10:00:00Z",
+    "id": 2,
+    "_id": "2",
+    "createdAt": "2026-11-11T15:11:53.683Z"
+  },
+  {
+    "userId": 4,
+    "badgeId": 1,
+    "reason": "Finished Milestone 1 ahead of target",
+    "awardedAt": "2026-09-12T10:00:00Z",
+    "id": 3,
+    "_id": "3",
+    "createdAt": "2026-11-11T15:11:53.683Z"
+  },
+  {
+    "userId": 4,
+    "badgeId": 3,
+    "reason": "Identified and mitigated MOSFET supply shortage",
+    "awardedAt": "2026-10-05T10:00:00Z",
+    "id": 4,
+    "_id": "4",
+    "createdAt": "2026-11-11T15:11:53.684Z"
+  },
+  {
+    "userId": 5,
+    "badgeId": 2,
+    "reason": "Flawless Week 38 progress report",
+    "awardedAt": "2026-09-28T10:00:00Z",
+    "id": 5,
+    "_id": "5",
+    "createdAt": "2026-11-11T15:11:53.684Z"
+  }
+]

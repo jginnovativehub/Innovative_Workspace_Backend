@@ -96,10 +96,48 @@ function checkBadge(userId, badgeCode, reason = '') {
   return badge;
 }
 
+function calculateUserStreak(userId) {
+  const user = db.users.findById(userId);
+  if (!user) return 0;
+
+  // Authoritative dynamic streak count maintained on user profile
+  return typeof user.streakCount === 'number' ? user.streakCount : 1;
+}
+
+function incrementUserStreak(userId, reason = 'On-time weekly milestone & reporting delivery') {
+  const user = db.users.findById(userId);
+  if (!user) return 0;
+
+  const currentStreak = typeof user.streakCount === 'number' ? user.streakCount : 1;
+  const newStreak = currentStreak + 1;
+
+  db.users.updateById(user.id, { streakCount: newStreak });
+
+  // Real-time celebration notification
+  db.notifications.insertOne({
+    recipientId: Number(user.id),
+    type: 'STREAK_INCREASED',
+    title: `🔥 On-Time Streak: ${newStreak} Weeks!`,
+    body: `${reason}. You have achieved a ${newStreak}-week consecutive delivery streak!`,
+    targetType: 'USER',
+    targetId: user.id,
+    createdAt: new Date().toISOString()
+  });
+
+  // Check 4-week Zero Overdue Streak badge
+  if (newStreak >= 4) {
+    checkBadge(user.id, 'zero_overdue_streak', 'Achieved 4+ consecutive weeks with 100% on-time milestone & task delivery');
+  }
+
+  return newStreak;
+}
+
 module.exports = {
   calculateLevel,
   getLevelTitle,
   awardXP,
-  checkBadge
+  checkBadge,
+  calculateUserStreak,
+  incrementUserStreak
 };
 
