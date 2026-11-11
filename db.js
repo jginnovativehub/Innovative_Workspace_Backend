@@ -1,49 +1,15 @@
 const mongoose = require('mongoose');
-const fs = require('fs');
-const path = require('path');
-
-const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) {
-  try {
-    fs.mkdirSync(dataDir, { recursive: true });
-  } catch (err) {
-    // Silent ignore in read-only setups
-  }
-}
 
 class DocumentCollection {
   constructor(name) {
     this.name = name;
     this.data = [];
     this.deletedIds = new Set();
-    this.filePath = path.join(dataDir, `${name}.json`);
-    this.load();
   }
 
-  // File fallback for offline / development / in-memory mode
-  load() {
-    try {
-      if (fs.existsSync(this.filePath)) {
-        const raw = fs.readFileSync(this.filePath, 'utf8');
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            this.data = parsed;
-          }
-        }
-      }
-    } catch (err) {
-      // Fallback cleanly to in-memory array
-    }
-  }
-
-  save() {
-    try {
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), 'utf8');
-    } catch (err) {
-      // Fallback silently if disk is unwritable
-    }
-  }
+  // Pure MongoDB mode: no disk JSON files loaded or saved
+  load() {}
+  save() {}
 
   // Live direct query from MongoDB Atlas
   async syncFromMongo() {
@@ -86,8 +52,6 @@ class DocumentCollection {
           };
         });
 
-      // Update local cache
-      this.save();
       return this.data;
     } catch (err) {
       console.warn(`[MongoDB Sync] Error fetching ${this.name}:`, err.message);
@@ -151,7 +115,6 @@ class DocumentCollection {
       createdAt: doc.createdAt || new Date().toISOString()
     };
     this.data.push(newDoc);
-    this.save();
 
     // Direct write to MongoDB Atlas
     if (mongoose.connection && mongoose.connection.readyState === 1) {
@@ -188,7 +151,6 @@ class DocumentCollection {
       updatedAt: new Date().toISOString()
     };
     this.data[index] = updated;
-    this.save();
 
     // Direct update to MongoDB Atlas
     if (mongoose.connection && mongoose.connection.readyState === 1) {
@@ -242,7 +204,6 @@ class DocumentCollection {
       updatedAt: new Date().toISOString()
     };
     this.data[index] = updated;
-    this.save();
 
     // Direct update to MongoDB Atlas
     if (mongoose.connection && mongoose.connection.readyState === 1) {
@@ -292,7 +253,6 @@ class DocumentCollection {
     if (removed) {
       if (removed.id !== undefined && removed.id !== null) this.deletedIds.add(String(removed.id));
       if (removed._id) this.deletedIds.add(String(removed._id));
-      this.save();
     }
 
     // Direct delete from MongoDB Atlas
@@ -340,7 +300,6 @@ class DocumentCollection {
   clear() {
     this.data = [];
     this.deletedIds.clear();
-    this.save();
     if (mongoose.connection && mongoose.connection.readyState === 1) {
       mongoose.connection.db.collection(this.name).deleteMany({}).catch(err => {
         console.warn(`[MongoDB] Error clearing ${this.name}:`, err.message);
