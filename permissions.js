@@ -110,9 +110,25 @@ function detectTaskCycles(taskId, newPredecessorIds = []) {
   return false;
 }
 
+function canAccessAttendance(user, targetUserId) {
+  if (!user || !targetUserId) return false;
+  const uId = String(user.id || user._id);
+  const targetId = String(targetUserId);
+  if (uId === targetId) return true;
+  if (['ADMIN', 'CEO', 'COO'].includes(user.role)) return true;
+  return false;
+}
+
+function canManageHolidays(user) {
+  if (!user) return false;
+  return ['ADMIN', 'CEO', 'COO'].includes(user.role);
+}
+
 module.exports = {
   canAccessProject,
   canAccessWeeklyReport,
+  canAccessAttendance,
+  canManageHolidays,
   detectMilestoneCycles,
   detectTaskCycles
 };

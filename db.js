@@ -356,5 +356,8 @@ module.exports = {
   badges: getCollection('badges'),
   userBadges: getCollection('userBadges'),
   systemConfigs: getCollection('systemConfigs'),
-  personalProjects: getCollection('personalProjects')
+  personalProjects: getCollection('personalProjects'),
+  attendance: getCollection('attendance'),
+  holidays: getCollection('holidays'),
+  weekendPolicy: getCollection('weekendPolicy')
 };

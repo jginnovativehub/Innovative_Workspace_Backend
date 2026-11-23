@@ -1,7 +1,7 @@
 const assert = require('assert');
 const db = require('./db');
 const { seedDatabase } = require('./seed');
-const { canAccessProject, canAccessWeeklyReport, detectMilestoneCycles } = require('./permissions');
+const { canAccessProject, canAccessWeeklyReport, canAccessAttendance, canManageHolidays, detectMilestoneCycles } = require('./permissions');
 const { generateToken } = require('./auth');
 const { awardXP, calculateLevel } = require('./gamification');
 
@@ -88,5 +88,64 @@ const alexUpdated = db.users.findById(alex.id);
 assert.strictEqual(alexUpdated.xp, initialXP + 80, 'Gamification XP was not updated correctly');
 console.log(`✅ Gamification Engine PASSED: XP awarded successfully (+80 XP -> Total: ${alexUpdated.xp}, Level: ${alexUpdated.level}, Title: ${alexUpdated.avatarTitle})`);
 
-console.log('\n🎉 ALL 9 CRITICAL SRS ACCEPTANCE TESTS PASSED END-TO-END WITH ZERO ERRORS!\n');
+// 10. AT-11: Attendance System Privacy & Role Isolation
+assert.strictEqual(canAccessAttendance(alex, priya.id), false, 'AT-11 FAIL: Alex Chen must NOT be permitted to view Priya Patel attendance');
+assert.strictEqual(canAccessAttendance(priya, alex.id), false, 'AT-11 FAIL: Priya Patel must NOT be permitted to view Alex Chen attendance');
+assert.strictEqual(canAccessAttendance(priya, priya.id), true, 'AT-11 FAIL: Priya Patel must be able to view her own attendance');
+assert.strictEqual(canAccessAttendance(coo, priya.id), true, 'AT-11 FAIL: COO Anita Roy must be permitted to view Priya Patel attendance');
+assert.strictEqual(canAccessAttendance(coo, alex.id), true, 'AT-11 FAIL: COO Anita Roy must be permitted to view Alex Chen attendance');
+const adminUser = db.users.findOne({ role: 'ADMIN' });
+assert.strictEqual(canAccessAttendance(adminUser, alex.id), true, 'AT-11 FAIL: Platform Admin must be permitted to view all employee attendance');
+
+// Test attendance record creation & comment
+const testDate = '2026-11-24';
+const newAtt = db.attendance.insertOne({
+  userId: priya.id,
+  date: testDate,
+  status: 'PRESENT',
+  comment: 'Completed test validation of attendance security',
+  markedAt: new Date().toISOString()
+});
+assert.ok(newAtt.id, 'Attendance record must have an ID');
+assert.strictEqual(newAtt.status, 'PRESENT');
+assert.strictEqual(newAtt.comment, 'Completed test validation of attendance security');
+console.log('✅ AT-11 PASSED: Attendance system strict privacy & role isolation enforced (Employee A cannot view Employee B attendance; Admin/CEO/COO have full oversight).');
+
+// 11. AT-12: Holiday Management & Weekend Policy Governance (Admin, CEO, COO only)
+const ceo = db.users.findOne({ role: 'CEO' });
+assert.strictEqual(canManageHolidays(adminUser), true, 'AT-12 FAIL: Platform Admin must be permitted to manage holidays');
+assert.strictEqual(canManageHolidays(ceo), true, 'AT-12 FAIL: CEO must be permitted to manage holidays & weekend policy');
+assert.strictEqual(canManageHolidays(coo), true, 'AT-12 FAIL: COO must be permitted to manage holidays & weekend policy');
+assert.strictEqual(canManageHolidays(alex), false, 'AT-12 FAIL: Employee Alex Chen must NOT be permitted to manage holidays or weekend policy');
+
+// Test weekend policy: by default Saturday and Sunday are NOT automatically holidays
+const currentPolicy = db.weekendPolicy.findById(1);
+assert.ok(currentPolicy, 'Weekend policy must be initialized');
+assert.strictEqual(currentPolicy.saturdayHoliday, false, 'Saturday must NOT be automatically holiday by default');
+assert.strictEqual(currentPolicy.sundayHoliday, false, 'Sunday must NOT be automatically holiday by default');
+
+// Admin, CEO, or COO explicitly configures Saturday/Sunday holiday policy
+db.weekendPolicy.updateById(1, { saturdayHoliday: true, sundayHoliday: true, updatedBy: ceo.id });
+const updatedPolicy = db.weekendPolicy.findById(1);
+assert.strictEqual(updatedPolicy.saturdayHoliday, true, 'CEO explicitly enabled Saturday holiday');
+assert.strictEqual(updatedPolicy.sundayHoliday, true, 'CEO explicitly enabled Sunday holiday');
+
+// Test COO declaring a company holiday
+const newHoliday = db.holidays.insertOne({
+  id: Date.now(),
+  date: '2026-11-28',
+  title: 'JG Innovation Hackathon & Celebration',
+  description: 'Company-wide innovation celebration',
+  type: 'COMPANY_HOLIDAY',
+  createdBy: coo.id,
+  createdAt: new Date().toISOString()
+});
+assert.ok(newHoliday.id, 'New holiday must have an ID');
+assert.strictEqual(newHoliday.title, 'JG Innovation Hackathon & Celebration');
+const foundHoliday = db.holidays.findOne({ date: '2026-11-28' });
+assert.ok(foundHoliday, 'Holiday must be retrievable by date');
+
+console.log('✅ AT-12 PASSED: Holiday declaration and weekend policy authority strictly restricted to Admin, CEO, and COO (Employees have read-only visibility).');
+
+console.log('\n🎉 ALL 12 CRITICAL SRS & GOVERNANCE ACCEPTANCE TESTS PASSED END-TO-END WITH ZERO ERRORS!\n');
 

@@ -22,6 +22,7 @@ const {
 const {
   canAccessProject,
   canAccessWeeklyReport,
+  canAccessAttendance,
   detectMilestoneCycles,
   detectTaskCycles
 } = require('./permissions');
@@ -2379,6 +2380,454 @@ app.patch('/api/v1/config', authenticate, requireAdmin, (req, res) => {
   const updated = db.systemConfigs.updateById(1, cleanConfig);
   recordAudit(req.user.id, 'SYSTEM_CONFIG_UPDATED', 'CONFIG', 1, null, 'Settings saved', 'Admin configuration');
   return res.json(updated);
+});
+
+// ---------------------------------------------------------------------
+// 10. ATTENDANCE MANAGEMENT & CALENDAR (ATT-01)
+// ---------------------------------------------------------------------
+
+function getLocalDateString(d = new Date()) {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// GET /api/v1/attendance
+// - Regular employee can ONLY query their own attendance (enforced strictly)
+// - Admin, CEO, and COO can query all attendance or filter by target userId, month, date
+app.get('/api/v1/attendance', authenticate, async (req, res) => {
+  await db.attendance.syncFromMongo();
+  const uRole = (req.user.role || '').toUpperCase();
+  const isPrivileged = ['ADMIN', 'CEO', 'COO'].includes(uRole);
+
+  const { month, date } = req.query;
+  let targetUserId = req.query.userId;
+
+  // Strict isolation: if not Admin/CEO/COO, user can only see their own attendance
+  if (!isPrivileged) {
+    if (targetUserId && String(targetUserId) !== String(req.user.id)) {
+      return res.status(403).json({
+        message: 'Access denied: Employees are strictly prohibited from viewing another employee\'s attendance.'
+      });
+    }
+    targetUserId = req.user.id;
+  }
+
+  let list = db.attendance.find();
+
+  // Filter by user if targetUserId specified
+  if (targetUserId) {
+    list = list.filter(a => String(a.userId) === String(targetUserId));
+  }
+
+  // Filter by month (e.g. "2026-11")
+  if (month && typeof month === 'string') {
+    list = list.filter(a => a.date && a.date.startsWith(month.trim()));
+  }
+
+  // Filter by specific date (e.g. "2026-11-23")
+  if (date && typeof date === 'string') {
+    list = list.filter(a => a.date === date.trim());
+  }
+
+  // Sort by date descending
+  list.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+  return res.json(list);
+});
+
+// GET /api/v1/attendance/summary
+// Summary statistics for monthly attendance and today's status
+app.get('/api/v1/attendance/summary', authenticate, async (req, res) => {
+  await Promise.all([
+    db.attendance.syncFromMongo(),
+    db.users.syncFromMongo()
+  ]);
+
+  const uRole = (req.user.role || '').toUpperCase();
+  const isPrivileged = ['ADMIN', 'CEO', 'COO'].includes(uRole);
+
+  const month = req.query.month || getLocalDateString().slice(0, 7); // e.g. "2026-11"
+  const todayStr = getLocalDateString();
+  let targetUserId = req.query.userId;
+
+  if (!isPrivileged) {
+    targetUserId = req.user.id;
+  }
+
+  const allRecords = db.attendance.find();
+  const monthRecords = allRecords.filter(a => a.date && a.date.startsWith(month));
+
+  // User-specific summary
+  const userRecords = targetUserId ? monthRecords.filter(a => String(a.userId) === String(targetUserId)) : monthRecords;
+  const presentCount = userRecords.filter(a => a.status === 'PRESENT').length;
+  const halfDayCount = userRecords.filter(a => a.status === 'HALF_DAY').length;
+  const leaveCount = userRecords.filter(a => a.status === 'ON_LEAVE').length;
+  const absentCount = userRecords.filter(a => a.status === 'ABSENT').length;
+
+  const todayRecord = targetUserId 
+    ? allRecords.find(a => String(a.userId) === String(targetUserId) && a.date === todayStr)
+    : allRecords.find(a => String(a.userId) === String(req.user.id) && a.date === todayStr);
+
+  const responseData = {
+    month,
+    today: todayStr,
+    isMarkedToday: Boolean(todayRecord && todayRecord.status === 'PRESENT'),
+    todayRecord: todayRecord || null,
+    stats: {
+      totalMarked: userRecords.length,
+      present: presentCount,
+      halfDay: halfDayCount,
+      leave: leaveCount,
+      absent: absentCount
+    }
+  };
+
+  // If Executive or Admin, also attach company-wide roll-call metrics
+  if (isPrivileged) {
+    const activeUsers = db.users.find().filter(u => u.active !== false);
+    const todayAllRecords = allRecords.filter(a => a.date === todayStr);
+
+    const presentTodayUserIds = new Set(
+      todayAllRecords.filter(a => a.status === 'PRESENT' || a.status === 'HALF_DAY').map(a => String(a.userId))
+    );
+    const leaveTodayUserIds = new Set(
+      todayAllRecords.filter(a => a.status === 'ON_LEAVE').map(a => String(a.userId))
+    );
+
+    responseData.companyOverview = {
+      totalEmployees: activeUsers.length,
+      presentToday: presentTodayUserIds.size,
+      onLeaveToday: leaveTodayUserIds.size,
+      notMarkedToday: Math.max(0, activeUsers.length - presentTodayUserIds.size - leaveTodayUserIds.size),
+      attendanceRateToday: activeUsers.length > 0 
+        ? Math.round((presentTodayUserIds.size / activeUsers.length) * 100) 
+        : 0
+    };
+  }
+
+  return res.json(responseData);
+});
+
+// POST /api/v1/attendance
+// Mark attendance for a date (defaults to today) with optional comment
+app.post('/api/v1/attendance', authenticate, async (req, res) => {
+  await Promise.all([
+    db.attendance.syncFromMongo(),
+    db.users.syncFromMongo()
+  ]);
+
+  const uRole = (req.user.role || '').toUpperCase();
+  const isPrivileged = ['ADMIN', 'CEO', 'COO'].includes(uRole);
+
+  const { date, status, comment, userId } = req.body;
+  const targetDate = (date && typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date.trim()))
+    ? date.trim()
+    : getLocalDateString();
+
+  // If regular employee, target is strictly req.user.id
+  let targetUserId = req.user.id;
+  if (isPrivileged && userId) {
+    targetUserId = Number(userId);
+  }
+
+  const targetUser = db.users.findById(targetUserId) || req.user;
+  if (!targetUser) {
+    return res.status(404).json({ message: 'Target employee account not found.' });
+  }
+
+  const cleanStatus = ['PRESENT', 'HALF_DAY', 'ON_LEAVE', 'ABSENT'].includes((status || '').toUpperCase())
+    ? status.toUpperCase()
+    : 'PRESENT';
+
+  const cleanComment = typeof comment === 'string' ? comment.trim() : '';
+
+  // Check if attendance already exists for targetUserId + date
+  const existing = db.attendance.find().find(a => 
+    String(a.userId) === String(targetUserId) && a.date === targetDate
+  );
+
+  let record;
+  let isNew = false;
+  const now = new Date().toISOString();
+
+  if (existing) {
+    record = await db.attendance.updateById(existing.id || existing._id, {
+      status: cleanStatus,
+      comment: cleanComment || existing.comment,
+      updatedAt: now,
+      markedBy: Number(req.user.id)
+    });
+  } else {
+    isNew = true;
+    record = db.attendance.insertOne({
+      userId: Number(targetUserId),
+      userName: targetUser.fullName || targetUser.name,
+      userEmail: targetUser.email,
+      department: targetUser.department || 'General',
+      role: targetUser.role,
+      date: targetDate,
+      status: cleanStatus,
+      comment: cleanComment,
+      markedAt: now,
+      markedBy: Number(req.user.id),
+      createdAt: now,
+      updatedAt: now
+    });
+  }
+
+  if (Number(targetUserId) !== Number(req.user.id)) {
+    recordAudit(
+      req.user.id,
+      'ATTENDANCE_MODIFIED',
+      'USER',
+      targetUserId,
+      existing ? `${existing.status}: ${existing.comment || ''}` : 'Unmarked',
+      `${cleanStatus}: ${cleanComment}`,
+      `Executive ${req.user.role} marked attendance for ${targetUser.fullName}`
+    );
+  }
+
+  return res.json({
+    status: 'ok',
+    message: isNew ? 'Attendance marked successfully' : 'Attendance updated successfully',
+    record
+  });
+});
+
+// PATCH /api/v1/attendance/:id
+// Update an existing attendance record (e.g. add/edit comment or adjust status)
+app.patch('/api/v1/attendance/:id', authenticate, async (req, res) => {
+  await db.attendance.syncFromMongo();
+  const rec = db.attendance.findById(req.params.id);
+  if (!rec) {
+    return res.status(404).json({ message: 'Attendance record not found.' });
+  }
+
+  const uRole = (req.user.role || '').toUpperCase();
+  const isPrivileged = ['ADMIN', 'CEO', 'COO'].includes(uRole);
+
+  // Strict check: only the employee themselves or Admin/CEO/COO can update this attendance record
+  if (!isPrivileged && String(rec.userId) !== String(req.user.id)) {
+    return res.status(403).json({
+      message: 'Access denied: You cannot edit another employee\'s attendance record.'
+    });
+  }
+
+  const updates = {};
+  if (req.body.status && ['PRESENT', 'HALF_DAY', 'ON_LEAVE', 'ABSENT'].includes(req.body.status.toUpperCase())) {
+    updates.status = req.body.status.toUpperCase();
+  }
+  if (req.body.comment !== undefined) {
+    updates.comment = String(req.body.comment).trim();
+  }
+  updates.updatedAt = new Date().toISOString();
+
+  const updated = await db.attendance.updateById(rec.id || rec._id, updates);
+  return res.json({ status: 'ok', record: updated });
+});
+
+// DELETE /api/v1/attendance/:id
+// Delete attendance record (Admin/CEO/COO only)
+app.delete('/api/v1/attendance/:id', authenticate, async (req, res) => {
+  const uRole = (req.user.role || '').toUpperCase();
+  if (!['ADMIN', 'CEO', 'COO'].includes(uRole)) {
+    return res.status(403).json({ message: 'Access denied: Administrative or Executive authority required.' });
+  }
+
+  await db.attendance.syncFromMongo();
+  const rec = db.attendance.findById(req.params.id);
+  if (!rec) {
+    return res.status(404).json({ message: 'Attendance record not found.' });
+  }
+
+  await db.attendance.deleteById(req.params.id);
+  recordAudit(req.user.id, 'ATTENDANCE_DELETED', 'USER', rec.userId, `${rec.date} (${rec.status})`, null, 'Attendance record removed');
+  return res.json({ status: 'ok', message: 'Attendance record removed.' });
+});
+
+// ---------------------------------------------------------------------
+// 11. COMPANY HOLIDAYS & WEEKEND POLICY (HOL-01)
+// - Admin, CEO, and COO have exclusive authority to declare/edit holidays and weekend policy
+// - Employees have read-only access to view holidays & weekend schedule on their calendar
+// ---------------------------------------------------------------------
+
+// GET /api/v1/holidays
+// Retrieve all company holidays and current weekend policy
+app.get('/api/v1/holidays', authenticate, async (req, res) => {
+  await db.holidays.syncFromMongo();
+  await db.weekendPolicy.syncFromMongo();
+  const holidays = db.holidays.find();
+  let policy = db.weekendPolicy.findById(1) || db.weekendPolicy.find()[0];
+  if (!policy) {
+    policy = {
+      id: 1,
+      saturdayHoliday: false,
+      sundayHoliday: false,
+      saturdayType: 'NONE'
+    };
+  }
+  return res.json({ holidays, weekendPolicy: policy });
+});
+
+// POST /api/v1/holidays
+// Declare a new holiday (Admin, CEO, or COO only)
+app.post('/api/v1/holidays', authenticate, async (req, res) => {
+  const uRole = (req.user.role || '').toUpperCase();
+  if (!['ADMIN', 'CEO', 'COO'].includes(uRole)) {
+    return res.status(403).json({
+      message: 'Access denied: Only Admin, CEO, or COO can declare company holidays.'
+    });
+  }
+
+  const { date, title, description, type } = req.body;
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date).trim())) {
+    return res.status(400).json({ message: 'Valid holiday date in YYYY-MM-DD format is required.' });
+  }
+  if (!title || !String(title).trim()) {
+    return res.status(400).json({ message: 'Holiday title is required.' });
+  }
+
+  await db.holidays.syncFromMongo();
+  const existing = db.holidays.find({ date: String(date).trim() });
+  if (existing.length > 0) {
+    // Update existing holiday on that date
+    const updated = await db.holidays.updateById(existing[0].id || existing[0]._id, {
+      title: String(title).trim(),
+      description: description ? String(description).trim() : '',
+      type: type || existing[0].type || 'COMPANY_HOLIDAY',
+      updatedBy: req.user.id,
+      updatedAt: new Date().toISOString()
+    });
+    recordAudit(req.user.id, 'HOLIDAY_UPDATED', 'HOLIDAY', updated.id, updated.date, updated.title, 'Company holiday updated');
+    return res.json({ status: 'ok', holiday: updated, message: 'Holiday updated successfully.' });
+  }
+
+  const newHoliday = {
+    id: Date.now(),
+    date: String(date).trim(),
+    title: String(title).trim(),
+    description: description ? String(description).trim() : '',
+    type: type || 'COMPANY_HOLIDAY',
+    createdBy: req.user.id,
+    createdAt: new Date().toISOString()
+  };
+
+  await db.holidays.insertOne(newHoliday);
+  recordAudit(req.user.id, 'HOLIDAY_CREATED', 'HOLIDAY', newHoliday.id, newHoliday.date, newHoliday.title, 'Company holiday declared');
+  return res.status(201).json({ status: 'ok', holiday: newHoliday, message: 'Company holiday declared successfully.' });
+});
+
+// PATCH /api/v1/holidays/:id
+// Update a holiday (Admin, CEO, or COO only)
+app.patch('/api/v1/holidays/:id', authenticate, async (req, res) => {
+  const uRole = (req.user.role || '').toUpperCase();
+  if (!['ADMIN', 'CEO', 'COO'].includes(uRole)) {
+    return res.status(403).json({
+      message: 'Access denied: Only Admin, CEO, or COO can edit company holidays.'
+    });
+  }
+
+  await db.holidays.syncFromMongo();
+  const hol = db.holidays.findById(req.params.id);
+  if (!hol) {
+    return res.status(404).json({ message: 'Holiday not found.' });
+  }
+
+  const updates = {};
+  if (req.body.title !== undefined) updates.title = String(req.body.title).trim();
+  if (req.body.date !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.date).trim())) {
+    updates.date = String(req.body.date).trim();
+  }
+  if (req.body.description !== undefined) updates.description = String(req.body.description).trim();
+  if (req.body.type !== undefined) updates.type = req.body.type;
+  updates.updatedBy = req.user.id;
+  updates.updatedAt = new Date().toISOString();
+
+  const updated = await db.holidays.updateById(hol.id || hol._id, updates);
+  recordAudit(req.user.id, 'HOLIDAY_UPDATED', 'HOLIDAY', hol.id, hol.date, updates.title || hol.title, 'Holiday updated');
+  return res.json({ status: 'ok', holiday: updated });
+});
+
+// DELETE /api/v1/holidays/:id
+// Delete a holiday (Admin, CEO, or COO only)
+app.delete('/api/v1/holidays/:id', authenticate, async (req, res) => {
+  const uRole = (req.user.role || '').toUpperCase();
+  if (!['ADMIN', 'CEO', 'COO'].includes(uRole)) {
+    return res.status(403).json({
+      message: 'Access denied: Only Admin, CEO, or COO can remove company holidays.'
+    });
+  }
+
+  await db.holidays.syncFromMongo();
+  const hol = db.holidays.findById(req.params.id);
+  if (!hol) {
+    return res.status(404).json({ message: 'Holiday not found.' });
+  }
+
+  await db.holidays.deleteById(req.params.id);
+  recordAudit(req.user.id, 'HOLIDAY_DELETED', 'HOLIDAY', hol.id, hol.date, hol.title, 'Company holiday removed');
+  return res.json({ status: 'ok', message: 'Holiday deleted successfully.' });
+});
+
+// GET /api/v1/holidays/weekend-policy
+// Get weekend holiday policy
+app.get('/api/v1/holidays/weekend-policy', authenticate, async (req, res) => {
+  await db.weekendPolicy.syncFromMongo();
+  let policy = db.weekendPolicy.findById(1) || db.weekendPolicy.find()[0];
+  if (!policy) {
+    policy = {
+      id: 1,
+      saturdayHoliday: false,
+      sundayHoliday: false,
+      saturdayType: 'NONE'
+    };
+  }
+  return res.json({ status: 'ok', weekendPolicy: policy });
+});
+
+// PATCH /api/v1/holidays/weekend-policy
+// Configure whether Saturday and Sunday are holidays or working days (Admin, CEO, or COO only)
+app.patch('/api/v1/holidays/weekend-policy', authenticate, async (req, res) => {
+  const uRole = (req.user.role || '').toUpperCase();
+  if (!['ADMIN', 'CEO', 'COO'].includes(uRole)) {
+    return res.status(403).json({
+      message: 'Access denied: Only Admin, CEO, or COO can configure weekend holiday policies.'
+    });
+  }
+
+  await db.weekendPolicy.syncFromMongo();
+  let policy = db.weekendPolicy.findById(1) || db.weekendPolicy.find()[0];
+  const updates = {
+    ...(policy || { id: 1 }),
+    updatedBy: req.user.id,
+    updatedAt: new Date().toISOString()
+  };
+
+  if (typeof req.body.saturdayHoliday === 'boolean') {
+    updates.saturdayHoliday = req.body.saturdayHoliday;
+  }
+  if (typeof req.body.sundayHoliday === 'boolean') {
+    updates.sundayHoliday = req.body.sundayHoliday;
+  }
+  if (req.body.saturdayType) {
+    updates.saturdayType = req.body.saturdayType;
+  }
+
+  if (policy && (policy.id || policy._id)) {
+    await db.weekendPolicy.updateById(policy.id || policy._id, updates);
+  } else {
+    updates.id = 1;
+    await db.weekendPolicy.insertOne(updates);
+  }
+
+  recordAudit(req.user.id, 'WEEKEND_POLICY_UPDATED', 'CONFIG', 1, null, `SatHoliday=${updates.saturdayHoliday}, SunHoliday=${updates.sundayHoliday}`, 'Weekend holiday schedule modified');
+  return res.json({
+    status: 'ok',
+    weekendPolicy: updates,
+    message: 'Weekend holiday policy updated successfully.'
+  });
 });
 
 // ---------------------------------------------------------------------

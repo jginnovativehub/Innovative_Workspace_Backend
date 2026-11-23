@@ -853,6 +853,115 @@ function seedDatabase(force = false) {
     });
   }
 
+  // 12. Attendance Records
+  const seedDates = [
+    '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06',
+    '2026-11-09', '2026-11-10', '2026-11-11', '2026-11-12', '2026-11-13',
+    '2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20',
+    '2026-11-23'
+  ];
+
+  let attId = 1;
+  // Seed Kishor / Priya
+  seedDates.forEach((dt, idx) => {
+    db.attendance.insertOne({
+      id: attId++,
+      userId: kishor.id,
+      userName: kishor.fullName,
+      userEmail: kishor.email,
+      department: kishor.department,
+      role: kishor.role,
+      date: dt,
+      status: idx === 7 ? 'HALF_DAY' : 'PRESENT',
+      comment: idx === 7 ? 'Doctor appointment in afternoon' : (idx === 15 ? 'Today - Sprint verification' : 'Present on site - Hardware lab'),
+      markedAt: `${dt}T09:15:00.000Z`,
+      markedBy: kishor.id,
+      createdAt: `${dt}T09:15:00.000Z`,
+      updatedAt: `${dt}T09:15:00.000Z`
+    });
+  });
+
+  // Seed Alex Chen
+  seedDates.slice(0, 15).forEach((dt, idx) => {
+    db.attendance.insertOne({
+      id: attId++,
+      userId: alex.id,
+      userName: alex.fullName,
+      userEmail: alex.email,
+      department: alex.department,
+      role: alex.role,
+      date: dt,
+      status: idx === 4 ? 'ON_LEAVE' : 'PRESENT',
+      comment: idx === 4 ? 'Approved sick leave' : 'Embedded systems testing',
+      markedAt: `${dt}T09:30:00.000Z`,
+      markedBy: alex.id,
+      createdAt: `${dt}T09:30:00.000Z`,
+      updatedAt: `${dt}T09:30:00.000Z`
+    });
+  });
+
+  // Seed Anita Roy (COO)
+  seedDates.forEach(dt => {
+    db.attendance.insertOne({
+      id: attId++,
+      userId: coo.id,
+      userName: coo.fullName,
+      userEmail: coo.email,
+      department: coo.department,
+      role: coo.role,
+      date: dt,
+      status: 'PRESENT',
+      comment: 'Operations review and milestone sign-off',
+      markedAt: `${dt}T09:00:00.000Z`,
+      markedBy: coo.id,
+      createdAt: `${dt}T09:00:00.000Z`,
+      updatedAt: `${dt}T09:00:00.000Z`
+    });
+  });
+
+  // 13. Weekend Policy & Company Holidays (Default: No days automatically forced as holiday; configured by Admin/CEO/COO)
+  db.weekendPolicy.clear();
+  db.weekendPolicy.insertOne({
+    id: 1,
+    saturdayHoliday: false,
+    sundayHoliday: false,
+    saturdayType: 'NONE',
+    updatedBy: ceo.id,
+    updatedAt: new Date().toISOString()
+  });
+
+  db.holidays.clear();
+  const demoHolidays = [
+    {
+      id: 1,
+      date: '2026-11-08',
+      title: 'Diwali Festival of Lights',
+      description: 'Annual Festival of Lights celebration',
+      type: 'FESTIVAL',
+      createdBy: ceo.id,
+      createdAt: '2026-11-01T08:00:00.000Z'
+    },
+    {
+      id: 2,
+      date: '2026-11-24',
+      title: 'Guru Nanak Jayanti',
+      description: 'Official corporate holiday',
+      type: 'PUBLIC_HOLIDAY',
+      createdBy: coo.id,
+      createdAt: '2026-11-01T08:00:00.000Z'
+    },
+    {
+      id: 3,
+      date: '2026-12-25',
+      title: 'Christmas Day',
+      description: 'Christmas public holiday',
+      type: 'PUBLIC_HOLIDAY',
+      createdBy: admin.id,
+      createdAt: '2026-11-01T08:00:00.000Z'
+    }
+  ];
+  demoHolidays.forEach(h => db.holidays.insertOne(h));
+
   console.log('Seed completed successfully! All SRS demo entities created.');
 }
 
