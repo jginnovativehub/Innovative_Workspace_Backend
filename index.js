@@ -439,7 +439,7 @@ app.post('/api/v1/users', authenticate, requireManagementOrAdmin, (req, res) => 
   return res.status(201).json(sanitizeUser(newUser));
 });
 
-app.patch('/api/v1/users/:id', authenticate, requireManagementOrAdmin, (req, res) => {
+app.patch('/api/v1/users/:id', authenticate, requireManagementOrAdmin, async (req, res) => {
   const userId = Number(req.params.id) || req.params.id;
   const user = db.users.findById(userId);
   if (!user) return res.status(404).json({ message: 'User not found' });
@@ -467,7 +467,7 @@ app.patch('/api/v1/users/:id', authenticate, requireManagementOrAdmin, (req, res
     }
   }
 
-  const beforeSummary = `role=${user.role}, active=${user.active}`;
+  const beforeSummary = `email=${user.email}, role=${user.role}, active=${user.active}`;
   const updates = {};
   if (req.body.fullName) updates.fullName = req.body.fullName.trim();
   if (req.body.email) {
@@ -475,6 +475,10 @@ app.patch('/api/v1/users/:id', authenticate, requireManagementOrAdmin, (req, res
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(cleanEmail)) {
       return res.status(400).json({ message: 'Invalid email address format' });
+    }
+    const existing = db.users.findOne({ email: cleanEmail });
+    if (existing && String(existing.id) !== String(userId) && String(existing._id) !== String(userId)) {
+      return res.status(400).json({ message: 'Email is already registered to another user' });
     }
     updates.email = cleanEmail;
   }
@@ -504,8 +508,8 @@ app.patch('/api/v1/users/:id', authenticate, requireManagementOrAdmin, (req, res
     updates.avatarTitle = getLevelTitle(updates.level);
   }
 
-  const updated = db.users.updateById(userId, updates);
-  recordAudit(req.user.id, 'USER_UPDATED', 'USER', userId, beforeSummary, `role=${updated.role}, active=${updated.active}`, `${actorRole} user edit`);
+  const updated = await db.users.updateById(userId, updates);
+  recordAudit(req.user.id, 'USER_UPDATED', 'USER', userId, beforeSummary, `email=${updated.email}, role=${updated.role}, active=${updated.active}`, `${actorRole} user edit`);
   return res.json(sanitizeUser(updated));
 });
 
