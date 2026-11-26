@@ -2893,10 +2893,22 @@ app.post('/api/v1/system/mongodb-uri', authenticate, requireAdmin, async (req, r
   }
 });
 
+const pwaStaticOptions = {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith(`${path.sep}sw.js`) || filePath.endsWith('/sw.js')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Service-Worker-Allowed', '/');
+    } else if (filePath.endsWith(`${path.sep}manifest.json`) || filePath.endsWith('/manifest.json')) {
+      res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  }
+};
+
 // 1. Static files serving for compiled Standalone Admin Portal (/admin)
 const adminDist = path.join(__dirname, '..', 'admin', 'dist');
 if (fs.existsSync(adminDist)) {
-  app.use('/admin', express.static(adminDist));
+  app.use('/admin', express.static(adminDist, pwaStaticOptions));
   app.get('/admin*', (req, res, next) => {
     if (req.path.startsWith('/api')) return next();
     res.sendFile(path.join(adminDist, 'index.html'));
@@ -2906,7 +2918,7 @@ if (fs.existsSync(adminDist)) {
 // 2. Static files serving for compiled Staff Frontend (/)
 const frontendDist = path.join(__dirname, '..', 'frontend', 'dist');
 if (fs.existsSync(frontendDist)) {
-  app.use(express.static(frontendDist));
+  app.use(express.static(frontendDist, pwaStaticOptions));
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api') || req.path.startsWith('/admin')) return next();
     res.sendFile(path.join(frontendDist, 'index.html'));
